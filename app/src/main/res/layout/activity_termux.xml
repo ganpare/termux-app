@@ -117,16 +117,6 @@
             android:orientation="horizontal">
 
             <com.google.android.material.button.MaterialButton
-                android:id="@+id/testButton"
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="48dp"
-                android:text="TEST"
-                android:textSize="14sp"
-                android:backgroundTint="#FF5722"
-                android:layout_marginEnd="4dp" />
-
-            <com.google.android.material.button.MaterialButton
                 android:id="@+id/byobuSessionsButton"
                 android:layout_width="0dp"
                 android:layout_weight="1"
@@ -134,7 +124,18 @@
                 android:text="SESSIONS"
                 android:textSize="14sp"
                 android:backgroundTint="#2196F3"
-                android:layout_marginStart="4dp" />
+                android:layout_marginEnd="4dp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/customCommandsButton"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="48dp"
+                android:text="CUSTOM"
+                android:textSize="14sp"
+                android:backgroundTint="#FF5722"
+                android:layout_marginStart="4dp"
+                android:layout_marginEnd="4dp" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/byobuCommandsButton"

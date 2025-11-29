@@ -33,6 +33,8 @@ import com.termux.R;
 import com.termux.app.api.file.FileReceiverActivity;
 import com.termux.app.byobu.ByobuSessionManager;
 import com.termux.app.byobu.ByobuCommandHelper;
+import com.termux.app.customcmd.CustomCommand;
+import com.termux.app.customcmd.CustomCommandManager;
 import com.termux.app.ssh.SshConfigManager;
 import com.termux.app.ssh.SshConnectionConfig;
 import com.termux.app.activities.SshConnectionsActivity;
@@ -263,19 +265,8 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
 
         setToggleKeyboardView();
 
-        // Set test button to send a command to current terminal session
-        View testButton = findViewById(R.id.testButton);
-        if (testButton != null) {
-            testButton.setOnClickListener(v -> {
-                TerminalSession session = getCurrentSession();
-                if (session != null) {
-                    byte[] data = "test-command\n".getBytes();
-                    session.write(data, 0, data.length);
-                } else {
-                    showToast("No active session", true);
-                }
-            });
-        }
+        // Set custom commands button
+        setCustomCommandsButton();
 
         // Set byobu sessions button
         setByobuSessionsButton();
@@ -841,7 +832,8 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                     if (session != null) {
                         // Use -d to create detached session first, then attach
                         // This avoids "sessions should be nested" warning
-                        String command = "byobu new-session -d -s '" + sessionName + "' && byobu attach -t '" + sessionName + "'\n";
+                        // Note: If already in a byobu session, detach first to avoid nested sessions
+                        String command = "if [ -n \"$TMUX\" ]; then byobu detach 2>/dev/null; fi; byobu new-session -d -s '" + sessionName + "' && sleep 0.5 && byobu attach -t '" + sessionName + "'\n";
                         byte[] data = command.getBytes();
                         session.write(data, 0, data.length);
                         showToast("セッション作成・接続: " + sessionName, false);
@@ -923,6 +915,171 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                     session.write(data, 0, data.length);
                     showToast("セッション終了: " + sessionName, false);
                 }
+            })
+            .setNegativeButton("キャンセル", null)
+            .show();
+    }
+
+    /**
+     * Set up custom commands button.
+     */
+    private void setCustomCommandsButton() {
+        View customButton = findViewById(R.id.customCommandsButton);
+        if (customButton == null) return;
+
+        CustomCommandManager cmdManager = new CustomCommandManager(this);
+
+        customButton.setOnClickListener(v -> {
+            showCustomCommandsDialog(cmdManager);
+        });
+    }
+
+    /**
+     * Show dialog with custom commands list and options.
+     */
+    private void showCustomCommandsDialog(CustomCommandManager cmdManager) {
+        List<CustomCommand> commands = cmdManager.getAllCommands();
+        
+        // Build display items: commands + "Add new" option
+        List<String> displayItems = new ArrayList<>();
+        displayItems.add("➕ 新規コマンドを追加");
+        for (CustomCommand cmd : commands) {
+            displayItems.add(cmd.getName());
+        }
+        
+        String[] items = displayItems.toArray(new String[0]);
+        
+        new AlertDialog.Builder(this)
+            .setTitle("カスタムコマンド (" + commands.size() + ")")
+            .setItems(items, (dialog, which) -> {
+                if (which == 0) {
+                    // Add new command
+                    showAddEditCommandDialog(cmdManager, null);
+                } else {
+                    // Show command actions
+                    CustomCommand selected = commands.get(which - 1);
+                    showCommandActionsDialog(cmdManager, selected);
+                }
+            })
+            .setNegativeButton("閉じる", null)
+            .show();
+    }
+
+    /**
+     * Show actions dialog for a selected custom command.
+     */
+    private void showCommandActionsDialog(CustomCommandManager cmdManager, CustomCommand cmd) {
+        String[] actions = {
+            "▶️ 実行",
+            "✏️ 編集",
+            "📋 コピー",
+            "🗑️ 削除"
+        };
+
+        new AlertDialog.Builder(this)
+            .setTitle(cmd.getName())
+            .setMessage("コマンド: " + cmd.getCommand())
+            .setItems(actions, (dialog, which) -> {
+                switch (which) {
+                    case 0: // Execute
+                        executeCustomCommand(cmd);
+                        break;
+                    case 1: // Edit
+                        showAddEditCommandDialog(cmdManager, cmd);
+                        break;
+                    case 2: // Copy
+                        ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                        ClipData clip = ClipData.newPlainText("Custom Command", cmd.getCommand());
+                        clipboard.setPrimaryClip(clip);
+                        showToast("コピーしました: " + cmd.getCommand(), false);
+                        break;
+                    case 3: // Delete
+                        confirmDeleteCommand(cmdManager, cmd);
+                        break;
+                }
+            })
+            .setNegativeButton("戻る", null)
+            .show();
+    }
+
+    /**
+     * Execute a custom command.
+     */
+    private void executeCustomCommand(CustomCommand cmd) {
+        TerminalSession session = getCurrentSession();
+        if (session == null) {
+            showToast("アクティブなセッションがありません", true);
+            return;
+        }
+
+        String command = cmd.getCommand();
+        if (!command.endsWith("\n")) {
+            command += "\n";
+        }
+        byte[] data = command.getBytes();
+        session.write(data, 0, data.length);
+        showToast("実行: " + cmd.getName(), false);
+    }
+
+    /**
+     * Show dialog to add or edit a custom command.
+     */
+    private void showAddEditCommandDialog(CustomCommandManager cmdManager, CustomCommand existing) {
+        boolean isEdit = existing != null;
+        
+        // Create dialog view
+        android.widget.LinearLayout layout = new android.widget.LinearLayout(this);
+        layout.setOrientation(android.widget.LinearLayout.VERTICAL);
+        layout.setPadding(48, 24, 48, 0);
+
+        final EditText nameInput = new EditText(this);
+        nameInput.setHint("コマンド名 (例: サーバー接続)");
+        nameInput.setSingleLine();
+        if (isEdit) nameInput.setText(existing.getName());
+        layout.addView(nameInput);
+
+        final EditText cmdInput = new EditText(this);
+        cmdInput.setHint("コマンド (例: ssh user@host)");
+        cmdInput.setMinLines(2);
+        cmdInput.setMaxLines(5);
+        if (isEdit) cmdInput.setText(existing.getCommand());
+        layout.addView(cmdInput);
+
+        AlertDialog.Builder builder = new AlertDialog.Builder(this)
+            .setTitle(isEdit ? "コマンドを編集" : "新規コマンドを追加")
+            .setView(layout)
+            .setPositiveButton("保存", (dialog, which) -> {
+                String name = nameInput.getText().toString().trim();
+                String command = cmdInput.getText().toString().trim();
+                
+                if (name.isEmpty() || command.isEmpty()) {
+                    showToast("名前とコマンドを入力してください", true);
+                    return;
+                }
+
+                if (isEdit) {
+                    cmdManager.updateCommand(existing.getId(), name, command);
+                    showToast("更新しました: " + name, false);
+                } else {
+                    cmdManager.saveCommand(name, command);
+                    showToast("追加しました: " + name, false);
+                }
+            })
+            .setNegativeButton("キャンセル", null);
+
+        builder.show();
+    }
+
+    /**
+     * Confirm before deleting a command.
+     */
+    private void confirmDeleteCommand(CustomCommandManager cmdManager, CustomCommand cmd) {
+        new AlertDialog.Builder(this)
+            .setTitle("削除の確認")
+            .setMessage("コマンド「" + cmd.getName() + "」を削除しますか？")
+            .setPositiveButton("削除", (dialog, which) -> {
+                cmdManager.deleteCommand(cmd.getId());
+                showToast("削除しました: " + cmd.getName(), false);
             })
             .setNegativeButton("キャンセル", null)
             .show();
