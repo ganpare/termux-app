@@ -6,6 +6,9 @@ import android.content.ActivityNotFoundException;
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.Context;
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.ServiceConnection;
@@ -28,6 +31,11 @@ import android.widget.Toast;
 
 import com.termux.R;
 import com.termux.app.api.file.FileReceiverActivity;
+import com.termux.app.byobu.ByobuSessionManager;
+import com.termux.app.byobu.ByobuCommandHelper;
+import com.termux.app.ssh.SshConfigManager;
+import com.termux.app.ssh.SshConnectionConfig;
+import com.termux.app.activities.SshConnectionsActivity;
 import com.termux.app.terminal.TermuxActivityRootView;
 import com.termux.app.terminal.TermuxTerminalSessionActivityClient;
 import com.termux.app.terminal.io.TermuxTerminalExtraKeys;
@@ -65,7 +73,11 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.drawerlayout.widget.DrawerLayout;
 import androidx.viewpager.widget.ViewPager;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * A terminal emulator activity.
@@ -250,6 +262,29 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         setNewSessionButtonView();
 
         setToggleKeyboardView();
+
+        // Set test button to send a command to current terminal session
+        View testButton = findViewById(R.id.testButton);
+        if (testButton != null) {
+            testButton.setOnClickListener(v -> {
+                TerminalSession session = getCurrentSession();
+                if (session != null) {
+                    byte[] data = "test-command\n".getBytes();
+                    session.write(data, 0, data.length);
+                } else {
+                    showToast("No active session", true);
+                }
+            });
+        }
+
+        // Set byobu sessions button
+        setByobuSessionsButton();
+
+        // Set byobu commands help button
+        setByobuCommandsButton();
+
+        // Set SSH buttons
+        setSshButtons();
 
         registerForContextMenu(mTerminalView);
 
@@ -592,6 +627,381 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             toggleTerminalToolbar();
             return true;
         });
+    }
+
+    /**
+     * Set up the byobu commands help button.
+     * Shows a list of byobu commands that can be copied to clipboard.
+     */
+    private void setByobuCommandsButton() {
+        View commandsButton = findViewById(R.id.byobuCommandsButton);
+        if (commandsButton == null) return;
+
+        commandsButton.setOnClickListener(v -> showByobuCommandsDialog());
+    }
+
+    /**
+     * Shows a dialog with byobu commands organized by category.
+     */
+    private void showByobuCommandsDialog() {
+        List<ByobuCommandHelper.ByobuCommand> commands = ByobuCommandHelper.getCommandList();
+        List<String> categories = ByobuCommandHelper.getCategories();
+
+        // Create a list of command strings for display
+        List<String> commandStrings = new ArrayList<>();
+        final List<ByobuCommandHelper.ByobuCommand> commandList = new ArrayList<>(); // Store actual commands
+        String currentCategory = "";
+        
+        for (ByobuCommandHelper.ByobuCommand cmd : commands) {
+            if (!cmd.getCategory().equals(currentCategory)) {
+                currentCategory = cmd.getCategory();
+                commandStrings.add("\n【" + currentCategory + "】");
+                commandList.add(null); // Placeholder for category header
+            }
+            commandStrings.add(cmd.getDescription() + ":\n  " + cmd.getCommand());
+            commandList.add(cmd);
+        }
+
+        String[] commandArray = commandStrings.toArray(new String[0]);
+
+        new AlertDialog.Builder(this)
+            .setTitle("Byobu Commands")
+            .setItems(commandArray, (dialog, which) -> {
+                // Skip category headers
+                if (which >= commandList.size() || commandList.get(which) == null) {
+                    return;
+                }
+
+                ByobuCommandHelper.ByobuCommand selectedCmd = commandList.get(which);
+                String commandTemplate = selectedCmd.getCommand();
+
+                // Check if command has variables
+                if (ByobuCommandHelper.hasVariables(commandTemplate)) {
+                    // Prompt for variables
+                    promptForVariablesAndExecute(commandTemplate, selectedCmd.getDescription());
+                } else {
+                    // Execute command directly
+                    executeByobuCommand(commandTemplate);
+                }
+            })
+            .setPositiveButton("Close", null)
+            .show();
+    }
+
+    /**
+     * Prompt user for variable values and execute the command.
+     */
+    private void promptForVariablesAndExecute(@NonNull String commandTemplate, @NonNull String description) {
+        List<String> variables = ByobuCommandHelper.extractVariables(commandTemplate);
+        if (variables.isEmpty()) {
+            executeByobuCommand(commandTemplate);
+            return;
+        }
+
+        // Collect variable values recursively
+        final java.util.Map<String, String> variableValues = new java.util.HashMap<>();
+        promptForVariableRecursive(commandTemplate, description, variables, 0, variableValues);
+    }
+
+    /**
+     * Recursively prompt for each variable.
+     */
+    private void promptForVariableRecursive(@NonNull String commandTemplate, @NonNull String description,
+                                            @NonNull List<String> variables, int index,
+                                            @NonNull final Map<String, String> variableValues) {
+        if (index >= variables.size()) {
+            // All variables collected, execute command
+            String finalCommand = ByobuCommandHelper.replaceVariables(commandTemplate, variableValues);
+            executeByobuCommand(finalCommand);
+            return;
+        }
+
+        String variableName = variables.get(index);
+        String prompt = ByobuCommandHelper.getVariablePrompt(variableName);
+
+        // Create a custom dialog for better title display
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        final EditText input = new EditText(this);
+        input.setSingleLine();
+        input.setHint(prompt);
+        
+        builder.setTitle(description)
+            .setMessage(prompt)
+            .setView(input)
+            .setPositiveButton(android.R.string.ok, (dialog, which) -> {
+                String value = input.getText().toString().trim();
+                if (!value.isEmpty()) {
+                    variableValues.put(variableName, value);
+                    promptForVariableRecursive(commandTemplate, description, variables, index + 1, variableValues);
+                } else {
+                    showToast("値を入力してください", false);
+                }
+            })
+            .setNegativeButton(android.R.string.cancel, null)
+            .show();
+    }
+
+    /**
+     * Execute a byobu command by sending it to the terminal.
+     */
+    private void executeByobuCommand(@NonNull String command) {
+        TerminalSession session = getCurrentSession();
+        if (session == null || !session.isRunning()) {
+            showToast("アクティブなターミナルセッションがありません", true);
+            return;
+        }
+
+        // Send command to terminal (add newline at the end)
+        byte[] data = (command + "\n").getBytes();
+        session.write(data, 0, data.length);
+        
+        showToast("実行: " + command, false);
+    }
+
+    /**
+     * Set up the byobu sessions button.
+     * When clicked, it sends a marker-wrapped command to list byobu sessions,
+     * parses the output, and shows a selection dialog.
+     */
+    private void setByobuSessionsButton() {
+        View sessionsButton = findViewById(R.id.byobuSessionsButton);
+        if (sessionsButton == null) return;
+
+        ByobuSessionManager byobuManager = new ByobuSessionManager();
+
+        sessionsButton.setOnClickListener(v -> {
+            TerminalSession session = getCurrentSession();
+            if (session == null) {
+                showToast("No active session", true);
+                return;
+            }
+
+            showToast("Fetching byobu sessions...", false);
+
+            byobuManager.listSessions(session, new ByobuSessionManager.SessionListCallback() {
+                @Override
+                public void onSessionsFound(List<String> sessions) {
+                    showByobuSessionsDialog(sessions, byobuManager);
+                }
+
+                @Override
+                public void onError(String message) {
+                    showToast(message, true);
+                }
+            });
+        });
+    }
+
+    /**
+     * Shows a dialog with the list of byobu sessions.
+     * User can select a session and then choose an action.
+     */
+    private void showByobuSessionsDialog(List<String> sessions, ByobuSessionManager byobuManager) {
+        // Add "New Session" option at the top
+        List<String> options = new ArrayList<>();
+        options.add("➕ 新規セッションを作成");
+        for (String s : sessions) {
+            options.add("📺 " + s);
+        }
+        
+        String[] optionArray = options.toArray(new String[0]);
+
+        new AlertDialog.Builder(this)
+            .setTitle("Byobu Sessions (" + sessions.size() + ")")
+            .setItems(optionArray, (dialog, which) -> {
+                if (which == 0) {
+                    // New session
+                    promptForNewSession(byobuManager);
+                } else {
+                    // Selected existing session
+                    String selectedSession = sessions.get(which - 1);
+                    showSessionActionsDialog(selectedSession, byobuManager);
+                }
+            })
+            .setNegativeButton("閉じる", null)
+            .show();
+    }
+
+    /**
+     * Prompt for new session name and create it.
+     */
+    private void promptForNewSession(ByobuSessionManager byobuManager) {
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        final EditText input = new EditText(this);
+        input.setSingleLine();
+        input.setHint("セッション名 (例: dev, work)");
+        
+        builder.setTitle("新規Byobuセッション")
+            .setMessage("セッション名を入力してください:")
+            .setView(input)
+            .setPositiveButton("作成して接続", (dialog, which) -> {
+                String sessionName = input.getText().toString().trim();
+                if (!sessionName.isEmpty()) {
+                    TerminalSession session = getCurrentSession();
+                    if (session != null) {
+                        // Use -d to create detached session first, then attach
+                        // This avoids "sessions should be nested" warning
+                        String command = "byobu new-session -d -s '" + sessionName + "' && byobu attach -t '" + sessionName + "'\n";
+                        byte[] data = command.getBytes();
+                        session.write(data, 0, data.length);
+                        showToast("セッション作成・接続: " + sessionName, false);
+                    }
+                } else {
+                    showToast("セッション名を入力してください", false);
+                }
+            })
+            .setNeutralButton("作成のみ", (dialog, which) -> {
+                String sessionName = input.getText().toString().trim();
+                if (!sessionName.isEmpty()) {
+                    TerminalSession session = getCurrentSession();
+                    if (session != null) {
+                        // Create session in detached mode (background)
+                        String command = "byobu new-session -d -s '" + sessionName + "'\n";
+                        byte[] data = command.getBytes();
+                        session.write(data, 0, data.length);
+                        showToast("セッション作成（バックグラウンド）: " + sessionName, false);
+                    }
+                } else {
+                    showToast("セッション名を入力してください", false);
+                }
+            })
+            .setNegativeButton("キャンセル", null)
+            .show();
+    }
+
+    /**
+     * Show actions available for a selected session.
+     */
+    private void showSessionActionsDialog(String sessionName, ByobuSessionManager byobuManager) {
+        String[] actions = {
+            "🔗 接続 (attach)",
+            "🗑️ 終了 (kill)",
+            "📋 セッション名をコピー"
+        };
+
+        new AlertDialog.Builder(this)
+            .setTitle("セッション: " + sessionName)
+            .setItems(actions, (dialog, which) -> {
+                TerminalSession session = getCurrentSession();
+                if (session == null) {
+                    showToast("アクティブなセッションがありません", true);
+                    return;
+                }
+
+                switch (which) {
+                    case 0: // Attach
+                        byobuManager.attachToSession(session, sessionName);
+                        showToast("接続中: " + sessionName, false);
+                        break;
+                    case 1: // Kill
+                        confirmKillSession(sessionName, byobuManager);
+                        break;
+                    case 2: // Copy to clipboard
+                        ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                        ClipData clip = ClipData.newPlainText("session name", sessionName);
+                        clipboard.setPrimaryClip(clip);
+                        showToast("コピー: " + sessionName, false);
+                        break;
+                }
+            })
+            .setNegativeButton("戻る", null)
+            .show();
+    }
+
+    /**
+     * Confirm before killing a session.
+     */
+    private void confirmKillSession(String sessionName, ByobuSessionManager byobuManager) {
+        new AlertDialog.Builder(this)
+            .setTitle("セッション終了の確認")
+            .setMessage("セッション「" + sessionName + "」を終了しますか？\n\n⚠️ この操作は取り消せません。")
+            .setPositiveButton("終了", (dialog, which) -> {
+                TerminalSession session = getCurrentSession();
+                if (session != null) {
+                    String command = "byobu kill-session -t " + sessionName + "\n";
+                    byte[] data = command.getBytes();
+                    session.write(data, 0, data.length);
+                    showToast("セッション終了: " + sessionName, false);
+                }
+            })
+            .setNegativeButton("キャンセル", null)
+            .show();
+    }
+
+    /**
+     * Set up SSH connection and management buttons.
+     */
+    private void setSshButtons() {
+        SshConfigManager sshConfigManager = new SshConfigManager(this);
+
+        // SSH Connect button - shows list of saved connections
+        View sshConnectButton = findViewById(R.id.sshConnectButton);
+        if (sshConnectButton != null) {
+            sshConnectButton.setOnClickListener(v -> {
+                List<SshConnectionConfig> configs = sshConfigManager.loadConfigs();
+                if (configs.isEmpty()) {
+                    showToast("No SSH connections configured. Use 'SSH設定' to add one.", true);
+                    return;
+                }
+
+                String[] configNames = new String[configs.size()];
+                for (int i = 0; i < configs.size(); i++) {
+                    configNames[i] = configs.get(i).toString();
+                }
+
+                new AlertDialog.Builder(this)
+                    .setTitle("SSH Connections")
+                    .setItems(configNames, (dialog, which) -> {
+                        SshConnectionConfig selectedConfig = configs.get(which);
+                        connectToSsh(selectedConfig);
+                    })
+                    .setNegativeButton("Cancel", null)
+                    .show();
+            });
+        }
+
+        // SSH Manage button - opens SSH connections management activity
+        View sshManageButton = findViewById(R.id.sshManageButton);
+        if (sshManageButton != null) {
+            sshManageButton.setOnClickListener(v -> {
+                Intent intent = new Intent(this, SshConnectionsActivity.class);
+                startActivity(intent);
+            });
+        }
+    }
+
+    /**
+     * Creates a new terminal session and connects via SSH.
+     */
+    private void connectToSsh(SshConnectionConfig config) {
+        if (mTermuxService == null || mTermuxTerminalSessionActivityClient == null) {
+            showToast("Service not ready", true);
+            return;
+        }
+
+        String sshCommand = config.buildSshCommand();
+        
+        // Create a new terminal session with the SSH command
+        // The session will execute the SSH command automatically
+        String sessionName = config.getName() != null ? config.getName() : config.getHost();
+        
+        try {
+            mTermuxTerminalSessionActivityClient.addNewSession(false, sessionName);
+            
+            // Wait a bit for the session to be created, then send SSH command
+            new android.os.Handler().postDelayed(() -> {
+                TerminalSession session = getCurrentSession();
+                if (session != null) {
+                    // Send the SSH command
+                    byte[] data = (sshCommand + "\n").getBytes();
+                    session.write(data, 0, data.length);
+                    showToast("Connecting to " + config.getHost() + "...", false);
+                }
+            }, 500);
+        } catch (Exception e) {
+            Logger.logStackTraceWithMessage("TermuxActivity", "Failed to create SSH session", e);
+            showToast("Failed to create SSH session", true);
+        }
     }
 
 
