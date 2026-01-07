@@ -40,11 +40,14 @@ import com.termux.app.customcmd.CustomCommandManager;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 
+import java.io.File;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import com.termux.app.ssh.SshConfigManager;
 import com.termux.app.ssh.SshConnectionConfig;
 import com.termux.app.activities.SshConnectionsActivity;
+import com.termux.app.dirnav.DirectoryNavigationManager;
 import com.termux.app.terminal.TermuxActivityRootView;
 import com.termux.app.terminal.TermuxTerminalSessionActivityClient;
 import com.termux.app.terminal.io.TermuxTerminalExtraKeys;
@@ -84,6 +87,7 @@ import androidx.viewpager.widget.ViewPager;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -301,6 +305,9 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
 
         // Set SSH buttons
         setSshButtons();
+
+        // Set directory navigation button
+        setDirectoryNavigationButton();
 
         registerForContextMenu(mTerminalView);
 
@@ -1515,14 +1522,14 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         }
 
         String sshCommand = config.buildSshCommand();
-        
+
         // Create a new terminal session with the SSH command
         // The session will execute the SSH command automatically
         String sessionName = config.getName() != null ? config.getName() : config.getHost();
-        
+
         try {
             mTermuxTerminalSessionActivityClient.addNewSession(false, sessionName);
-            
+
             // Wait a bit for the session to be created, then send SSH command
             new android.os.Handler().postDelayed(() -> {
                 TerminalSession session = getCurrentSession();
@@ -1537,6 +1544,78 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             Logger.logStackTraceWithMessage("TermuxActivity", "Failed to create SSH session", e);
             showToast("Failed to create SSH session", true);
         }
+    }
+
+    /**
+     * Set up directory navigation button.
+     */
+    private void setDirectoryNavigationButton() {
+        View dirNavButton = findViewById(R.id.dirNavButton);
+        if (dirNavButton == null) return;
+
+        DirectoryNavigationManager dirNavManager = new DirectoryNavigationManager();
+
+        dirNavButton.setOnClickListener(v -> {
+            TerminalSession session = getCurrentSession();
+            if (session == null) {
+                showToast("アクティブなセッションがありません", true);
+                return;
+            }
+
+            showToast("ディレクトリ取得中...", false);
+
+            dirNavManager.listDirectories(session, new DirectoryNavigationManager.DirectoryListCallback() {
+                @Override
+                public void onDirectoriesFound(List<String> directories) {
+                    showDirectoryNavigationDialog(directories, dirNavManager);
+                }
+
+                @Override
+                public void onError(String message) {
+                    showToast(message, true);
+                }
+            });
+        });
+    }
+
+    /**
+     * Shows a dialog with the list of directories.
+     * User can select a directory to navigate to.
+     */
+    private void showDirectoryNavigationDialog(List<String> directories, DirectoryNavigationManager dirNavManager) {
+        // Format directory names with icons
+        String[] dirNames = new String[directories.size()];
+        for (int i = 0; i < directories.size(); i++) {
+            String dirName = directories.get(i);
+            if (dirName.equals("..")) {
+                dirNames[i] = "⬆️ .. (親ディレクトリ)";
+            } else {
+                dirNames[i] = "📁 " + dirName;
+            }
+        }
+
+        new AlertDialog.Builder(this)
+            .setTitle("ディレクトリ選択 (" + (directories.size() - 1) + ")")
+            .setItems(dirNames, (dialog, which) -> {
+                String selectedDir = directories.get(which);
+                navigateToDirectory(selectedDir, dirNavManager);
+            })
+            .setNegativeButton("キャンセル", null)
+            .show();
+    }
+
+    /**
+     * Navigate to the selected directory by sending cd command.
+     */
+    private void navigateToDirectory(String dirName, DirectoryNavigationManager dirNavManager) {
+        TerminalSession session = getCurrentSession();
+        if (session == null) {
+            showToast("アクティブなセッションがありません", true);
+            return;
+        }
+
+        dirNavManager.changeDirectory(session, dirName);
+        showToast("移動: " + dirName, false);
     }
 
 

@@ -177,6 +177,23 @@
 
         </LinearLayout>
 
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="4dp">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/dirNavButton"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="48dp"
+                android:text="DIR"
+                android:textSize="14sp"
+                android:backgroundTint="#FF9800" />
+
+        </LinearLayout>
+
     </LinearLayout>
 
     <View
