@@ -190,7 +190,18 @@
                 android:layout_height="48dp"
                 android:text="DIR"
                 android:textSize="14sp"
-                android:backgroundTint="#FF9800" />
+                android:backgroundTint="#FF9800"
+                android:layout_marginEnd="4dp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/claudeSyncButton"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="48dp"
+                android:text="CLAUDE"
+                android:textSize="14sp"
+                android:backgroundTint="#2196F3"
+                android:layout_marginStart="4dp" />
 
         </LinearLayout>
 
