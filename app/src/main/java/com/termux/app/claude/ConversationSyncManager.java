@@ -95,8 +95,10 @@ public class ConversationSyncManager {
         // Get current working directory and convert to Claude project format
         // Use stat to get timestamp, filename, and size, then sort by timestamp
         // descending
+        // Use @@@ for xargs placeholder to avoid conflict with {} in find -exec and %
+        // in stat format
         return "echo '" + LIST_MARKER_START + "' && " +
-                "pwd | sed 's|^/||;s|/|-|g' | sed 's|^|-|' | xargs -I {} find ~/.claude/projects/{} -name '*.jsonl' -type f -exec stat -c \"%Y %n %s\" {} + 2>/dev/null | "
+                "pwd | sed 's|^/||;s|/|-|g' | sed 's|^|-|' | xargs -I @@@ find ~/.claude/projects/@@@ -name '*.jsonl' -type f -exec stat -c \"%Y %n %s\" {} + 2>/dev/null | "
                 +
                 "sort -rn | cut -d' ' -f2- && " +
                 "echo '" + LIST_MARKER_END + "'\n";
