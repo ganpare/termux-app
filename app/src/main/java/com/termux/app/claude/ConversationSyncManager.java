@@ -34,8 +34,9 @@ public class ConversationSyncManager {
     public static final String FILE_MARKER_START = "__CONV_FILE_START_9mQ7wR2__";
     public static final String FILE_MARKER_END = "__CONV_FILE_END_9mQ7wR2__";
 
-    // Delay before reading terminal buffer (ms)
-    private static final int READ_DELAY_MS = 800; // Longer for file transfers
+    // Polling configuration
+    private static final int POLL_INTERVAL_MS = 500;
+    private static final int MAX_POLL_ATTEMPTS = 20; // 10 seconds total timeout
 
     // Local storage directory
     private static final String STORAGE_DIR = "/data/data/com.termux/files/home/claude-history";
@@ -90,18 +91,26 @@ public class ConversationSyncManager {
 
     /**
      * Generates the command to list conversation files with metadata.
+     *
+     * @param limit Maximum number of files to return (0 for no limit)
      */
-    public String getListConversationsCommand() {
+    public String getListConversationsCommand(int limit) {
         // Get current working directory and convert to Claude project format
         // Use stat to get timestamp, filename, and size, then sort by timestamp
         // descending
         // Use @@@ for xargs placeholder to avoid conflict with {} in find -exec and %
         // in stat format
-        return "echo '" + LIST_MARKER_START + "' && " +
-                "pwd | sed 's|^/||;s|/|-|g' | sed 's|^|-|' | xargs -I @@@ find ~/.claude/projects/@@@ -name '*.jsonl' -type f -exec stat -c \"%Y %n %s\" {} + 2>/dev/null | "
+        // Use $HOME instead of ~ to ensure absolute paths are returned by find
+        String command = "echo '" + LIST_MARKER_START + "' && " +
+                "pwd | sed 's|^/||;s|/|-|g' | sed 's|^|-|' | xargs -I @@@ find \"$HOME/.claude/projects/@@@\" -name '*.jsonl' -type f -exec stat -c \"%Y %n %s\" {} + 2>/dev/null | "
                 +
-                "sort -rn | cut -d' ' -f2- && " +
-                "echo '" + LIST_MARKER_END + "'\n";
+                "sort -rn | cut -d' ' -f2-";
+
+        if (limit > 0) {
+            command += " | head -n " + limit;
+        }
+
+        return command + " && echo '" + LIST_MARKER_END + "'\n";
     }
 
     /**
@@ -110,38 +119,50 @@ public class ConversationSyncManager {
     public String getDownloadFileCommand(String remotePath) {
         // Escape single quotes in path
         String escapedPath = remotePath.replace("'", "'\\''");
+        // Use cat | base64 instead of redirection < for better compatibility
+        // Redirect stderr to null to prevent error messages from corrupting the base64
+        // stream
         return "echo '" + FILE_MARKER_START + "' && " +
-                "base64 < '" + escapedPath + "' && " +
+                "cat '" + escapedPath + "' 2>/dev/null | base64 && " +
                 "echo '" + FILE_MARKER_END + "'\n";
     }
 
     /**
      * Lists available conversation files from the remote server.
+     *
+     * @param limit Maximum number of conversations to list (0 for all)
      */
-    public void listConversations(TerminalSession session, ConversationListCallback callback) {
+    public void listConversations(TerminalSession session, int limit, ConversationListCallback callback) {
         if (session == null) {
             callback.onError("No active terminal session");
             return;
         }
 
         // Send the list command
-        String command = getListConversationsCommand();
+        String command = getListConversationsCommand(limit);
         byte[] data = command.getBytes();
         session.write(data, 0, data.length);
 
-        // Wait for output, then parse
-        mainHandler.postDelayed(() -> {
-            String transcript = ShellUtils.getTerminalSessionTranscriptText(session, false, true);
-            List<ConversationFile> conversations = parseConversationList(transcript);
+        // Wait for output using polling
+        pollForOutput(session, LIST_MARKER_END, new OutputCallback() {
+            @Override
+            public void onOutputFound(String transcript) {
+                List<ConversationFile> conversations = parseConversationList(transcript);
 
-            if (conversations == null) {
-                callback.onError("Could not find conversation list markers in output");
-            } else if (conversations.isEmpty()) {
-                callback.onError("No conversation files found");
-            } else {
-                callback.onConversationsFound(conversations);
+                if (conversations == null) {
+                    callback.onError("Could not find conversation list markers in output");
+                } else if (conversations.isEmpty()) {
+                    callback.onError("No conversation files found");
+                } else {
+                    callback.onConversationsFound(conversations);
+                }
             }
-        }, READ_DELAY_MS);
+
+            @Override
+            public void onTimeout() {
+                callback.onError("Timeout waiting for conversation list");
+            }
+        });
     }
 
     /**
@@ -207,25 +228,69 @@ public class ConversationSyncManager {
         byte[] data = command.getBytes();
         session.write(data, 0, data.length);
 
-        // Wait for output, then parse and save
+        // Wait for output using polling
+        pollForOutput(session, FILE_MARKER_END, new OutputCallback() {
+            @Override
+            public void onOutputFound(String transcript) {
+                String base64Content = extractFileContent(transcript);
+
+                if (base64Content == null) {
+                    callback.onError("Could not find file content markers in output");
+                    return;
+                }
+
+                // Decode and save
+                try {
+                    // Check for common error patterns or invalid characters before decoding
+                    // Only standard Base64 chars are allowed (A-Z, a-z, 0-9, +, /, =)
+                    // We remove whitespace first, as per standard
+                    String cleanContent = base64Content.replaceAll("\\s+", "");
+
+                    byte[] fileContent = Base64.decode(cleanContent, Base64.DEFAULT);
+                    String localPath = saveToLocal(conversation.filename, fileContent);
+                    callback.onDownloadComplete(localPath);
+                } catch (IllegalArgumentException e) {
+                    // This likely means we captured an error message (like "cat: ...") instead of
+                    // base64
+                    String snippet = base64Content.length() > 100 ? base64Content.substring(0, 100) + "..."
+                            : base64Content;
+                    callback.onError("Download failed (invalid data). Output: " + snippet);
+                } catch (Exception e) {
+                    callback.onError("Failed to save file: " + e.getMessage());
+                }
+            }
+
+            @Override
+            public void onTimeout() {
+                callback.onError("Timeout waiting for file download");
+            }
+        });
+    }
+
+    private interface OutputCallback {
+        void onOutputFound(String transcript);
+
+        void onTimeout();
+    }
+
+    private void pollForOutput(TerminalSession session, String endMarker, OutputCallback callback) {
+        pollForOutput(session, endMarker, callback, 0);
+    }
+
+    private void pollForOutput(TerminalSession session, String endMarker, OutputCallback callback, int attempt) {
+        if (attempt >= MAX_POLL_ATTEMPTS) {
+            callback.onTimeout();
+            return;
+        }
+
         mainHandler.postDelayed(() -> {
             String transcript = ShellUtils.getTerminalSessionTranscriptText(session, false, true);
-            String base64Content = extractFileContent(transcript);
-
-            if (base64Content == null) {
-                callback.onError("Could not find file content markers in output");
-                return;
+            if (transcript != null && transcript.contains(endMarker)) {
+                callback.onOutputFound(transcript);
+            } else {
+                pollForOutput(session, endMarker, callback, attempt + 1);
             }
-
-            // Decode and save
-            try {
-                byte[] fileContent = Base64.decode(base64Content, Base64.DEFAULT);
-                String localPath = saveToLocal(conversation.filename, fileContent);
-                callback.onDownloadComplete(localPath);
-            } catch (Exception e) {
-                callback.onError("Failed to decode/save file: " + e.getMessage());
-            }
-        }, READ_DELAY_MS * 2); // Longer delay for file transfers
+        }, POLL_INTERVAL_MS);
     }
 
     /**

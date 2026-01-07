@@ -1675,7 +1675,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
 
             showToast("会話履歴を取得中...", false);
 
-            syncManager.listConversations(session, new ConversationSyncManager.ConversationListCallback() {
+            syncManager.listConversations(session, 1, new ConversationSyncManager.ConversationListCallback() {
                 @Override
                 public void onConversationsFound(List<ConversationSyncManager.ConversationFile> conversations) {
                     showConversationListDialog(conversations, syncManager);
