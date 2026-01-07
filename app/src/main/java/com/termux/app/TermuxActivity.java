@@ -33,8 +33,15 @@ import com.termux.R;
 import com.termux.app.api.file.FileReceiverActivity;
 import com.termux.app.byobu.ByobuSessionManager;
 import com.termux.app.byobu.ByobuCommandHelper;
+import com.termux.app.customcmd.CommandFolder;
 import com.termux.app.customcmd.CustomCommand;
 import com.termux.app.customcmd.CustomCommandManager;
+
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
+
+import java.io.InputStream;
+import java.io.OutputStream;
 import com.termux.app.ssh.SshConfigManager;
 import com.termux.app.ssh.SshConnectionConfig;
 import com.termux.app.activities.SshConnectionsActivity;
@@ -121,6 +128,21 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
      * Termux app shared preferences manager.
      */
     private TermuxAppSharedPreferences mPreferences;
+
+    /**
+     * Activity result launcher for exporting custom commands.
+     */
+    private ActivityResultLauncher<String> mExportLauncher;
+
+    /**
+     * Activity result launcher for importing custom commands.
+     */
+    private ActivityResultLauncher<String[]> mImportLauncher;
+
+    /**
+     * Cached CustomCommandManager instance for import/export operations.
+     */
+    private CustomCommandManager mCustomCommandManager;
 
     /**
      * Termux app SharedProperties loaded from termux.properties
@@ -226,6 +248,9 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         setActivityTheme();
 
         super.onCreate(savedInstanceState);
+
+        // Initialize custom commands manager and activity result launchers
+        initCustomCommandsLaunchers();
 
         setContentView(R.layout.activity_termux);
 
@@ -664,15 +689,24 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                 }
 
                 ByobuCommandHelper.ByobuCommand selectedCmd = commandList.get(which);
-                String commandTemplate = selectedCmd.getCommand();
 
-                // Check if command has variables
-                if (ByobuCommandHelper.hasVariables(commandTemplate)) {
-                    // Prompt for variables
-                    promptForVariablesAndExecute(commandTemplate, selectedCmd.getDescription());
+                // Handle different command types
+                if (selectedCmd.getType() == ByobuCommandHelper.CommandType.FUNCTION_KEY) {
+                    // Send function key escape sequence
+                    sendFunctionKey(selectedCmd.getEscapeSequence(), selectedCmd.getDescription());
+                } else if (selectedCmd.getType() == ByobuCommandHelper.CommandType.INFO_ONLY) {
+                    // Just show info, don't execute
+                    showToast(selectedCmd.getDescription(), false);
                 } else {
-                    // Execute command directly
-                    executeByobuCommand(commandTemplate);
+                    // Normal shell command
+                    String commandTemplate = selectedCmd.getCommand();
+                    if (ByobuCommandHelper.hasVariables(commandTemplate)) {
+                        // Prompt for variables
+                        promptForVariablesAndExecute(commandTemplate, selectedCmd.getDescription());
+                    } else {
+                        // Execute command directly
+                        executeByobuCommand(commandTemplate);
+                    }
                 }
             })
             .setPositiveButton("Close", null)
@@ -730,6 +764,23 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             })
             .setNegativeButton(android.R.string.cancel, null)
             .show();
+    }
+
+    /**
+     * Send a function key (escape sequence) to the terminal.
+     */
+    private void sendFunctionKey(@NonNull String escapeSequence, @NonNull String description) {
+        TerminalSession session = getCurrentSession();
+        if (session == null || !session.isRunning()) {
+            showToast("アクティブなターミナルセッションがありません", true);
+            return;
+        }
+
+        // Send escape sequence directly (no newline)
+        byte[] data = escapeSequence.getBytes();
+        session.write(data, 0, data.length);
+        
+        showToast("送信: " + description, false);
     }
 
     /**
@@ -921,44 +972,106 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     }
 
     /**
+     * Initialize custom commands ActivityResultLaunchers for import/export.
+     */
+    private void initCustomCommandsLaunchers() {
+        mCustomCommandManager = new CustomCommandManager(this);
+
+        // Export launcher - creates a JSON file
+        mExportLauncher = registerForActivityResult(
+            new ActivityResultContracts.CreateDocument(),
+            uri -> {
+                if (uri != null) {
+                    try {
+                        OutputStream outputStream = getContentResolver().openOutputStream(uri);
+                        if (outputStream != null) {
+                            mCustomCommandManager.exportToFile(outputStream);
+                            outputStream.close();
+                            showToast("エクスポート完了", false);
+                        }
+                    } catch (Exception e) {
+                        showToast("エクスポート失敗: " + e.getMessage(), true);
+                    }
+                }
+            }
+        );
+
+        // Import launcher - opens a JSON file
+        mImportLauncher = registerForActivityResult(
+            new ActivityResultContracts.OpenDocument(),
+            uri -> {
+                if (uri != null) {
+                    handleImportFile(uri);
+                }
+            }
+        );
+    }
+
+    /**
      * Set up custom commands button.
      */
     private void setCustomCommandsButton() {
         View customButton = findViewById(R.id.customCommandsButton);
         if (customButton == null) return;
 
-        CustomCommandManager cmdManager = new CustomCommandManager(this);
-
         customButton.setOnClickListener(v -> {
-            showCustomCommandsDialog(cmdManager);
+            showCustomCommandsDialog();
         });
     }
 
     /**
-     * Show dialog with custom commands list and options.
+     * Show dialog with custom commands list organized by folders.
      */
-    private void showCustomCommandsDialog(CustomCommandManager cmdManager) {
-        List<CustomCommand> commands = cmdManager.getAllCommands();
-        
-        // Build display items: commands + "Add new" option
+    private void showCustomCommandsDialog() {
+        List<CommandFolder> folders = mCustomCommandManager.getAllFolders();
+        List<CustomCommand> rootCommands = mCustomCommandManager.getCommandsInFolder(null);
+
+        // Build display items
         List<String> displayItems = new ArrayList<>();
-        displayItems.add("➕ 新規コマンドを追加");
-        for (CustomCommand cmd : commands) {
-            displayItems.add(cmd.getName());
+        List<Object> dataItems = new ArrayList<>();  // Store folder/command objects
+
+        // Menu options
+        displayItems.add("➕ 新規コマンド");
+        dataItems.add("NEW_COMMAND");
+        displayItems.add("📁 新規フォルダ");
+        dataItems.add("NEW_FOLDER");
+        displayItems.add("📤 エクスポート");
+        dataItems.add("EXPORT");
+        displayItems.add("📥 インポート");
+        dataItems.add("IMPORT");
+
+        // Folders
+        for (CommandFolder folder : folders) {
+            int count = mCustomCommandManager.getCommandCountInFolder(folder.getId());
+            displayItems.add("📁 " + folder.getName() + " (" + count + ")");
+            dataItems.add(folder);
         }
-        
+
+        // Root-level commands
+        for (CustomCommand cmd : rootCommands) {
+            displayItems.add("📄 " + cmd.getName());
+            dataItems.add(cmd);
+        }
+
+        int totalCount = mCustomCommandManager.getAllCommands().size();
         String[] items = displayItems.toArray(new String[0]);
-        
+
         new AlertDialog.Builder(this)
-            .setTitle("カスタムコマンド (" + commands.size() + ")")
+            .setTitle("カスタムコマンド (" + totalCount + ")")
             .setItems(items, (dialog, which) -> {
-                if (which == 0) {
-                    // Add new command
-                    showAddEditCommandDialog(cmdManager, null);
-                } else {
-                    // Show command actions
-                    CustomCommand selected = commands.get(which - 1);
-                    showCommandActionsDialog(cmdManager, selected);
+                Object selected = dataItems.get(which);
+                if ("NEW_COMMAND".equals(selected)) {
+                    showAddEditCommandDialog(null, null);
+                } else if ("NEW_FOLDER".equals(selected)) {
+                    showAddFolderDialog();
+                } else if ("EXPORT".equals(selected)) {
+                    exportCustomCommands();
+                } else if ("IMPORT".equals(selected)) {
+                    importCustomCommands();
+                } else if (selected instanceof CommandFolder) {
+                    showFolderContentsDialog((CommandFolder) selected);
+                } else if (selected instanceof CustomCommand) {
+                    showCommandActionsDialog((CustomCommand) selected, null);
                 }
             })
             .setNegativeButton("閉じる", null)
@@ -966,15 +1079,140 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     }
 
     /**
+     * Show contents of a folder.
+     */
+    private void showFolderContentsDialog(CommandFolder folder) {
+        List<CustomCommand> commands = mCustomCommandManager.getCommandsInFolder(folder.getId());
+
+        List<String> displayItems = new ArrayList<>();
+        displayItems.add("➕ このフォルダにコマンドを追加");
+        displayItems.add("✏️ フォルダ名を変更");
+        displayItems.add("🗑️ フォルダを削除");
+
+        for (CustomCommand cmd : commands) {
+            displayItems.add("📄 " + cmd.getName());
+        }
+
+        String[] items = displayItems.toArray(new String[0]);
+
+        new AlertDialog.Builder(this)
+            .setTitle("📁 " + folder.getName())
+            .setItems(items, (dialog, which) -> {
+                if (which == 0) {
+                    showAddEditCommandDialog(null, folder.getId());
+                } else if (which == 1) {
+                    showRenameFolderDialog(folder);
+                } else if (which == 2) {
+                    confirmDeleteFolder(folder);
+                } else {
+                    CustomCommand cmd = commands.get(which - 3);
+                    showCommandActionsDialog(cmd, folder.getId());
+                }
+            })
+            .setNegativeButton("戻る", (d, w) -> showCustomCommandsDialog())
+            .show();
+    }
+
+    /**
+     * Show dialog to add a new folder.
+     */
+    private void showAddFolderDialog() {
+        final EditText input = new EditText(this);
+        input.setHint("フォルダ名");
+        input.setSingleLine();
+        input.setPadding(48, 24, 48, 0);
+
+        new AlertDialog.Builder(this)
+            .setTitle("新規フォルダ")
+            .setView(input)
+            .setPositiveButton("作成", (dialog, which) -> {
+                String name = input.getText().toString().trim();
+                if (!name.isEmpty()) {
+                    mCustomCommandManager.createFolder(name);
+                    showToast("フォルダを作成: " + name, false);
+                    showCustomCommandsDialog();
+                }
+            })
+            .setNegativeButton("キャンセル", null)
+            .show();
+    }
+
+    /**
+     * Show dialog to rename a folder.
+     */
+    private void showRenameFolderDialog(CommandFolder folder) {
+        final EditText input = new EditText(this);
+        input.setText(folder.getName());
+        input.setSingleLine();
+        input.setPadding(48, 24, 48, 0);
+
+        new AlertDialog.Builder(this)
+            .setTitle("フォルダ名を変更")
+            .setView(input)
+            .setPositiveButton("保存", (dialog, which) -> {
+                String name = input.getText().toString().trim();
+                if (!name.isEmpty()) {
+                    mCustomCommandManager.updateFolder(folder.getId(), name);
+                    showToast("フォルダ名を変更: " + name, false);
+                    showCustomCommandsDialog();
+                }
+            })
+            .setNegativeButton("キャンセル", null)
+            .show();
+    }
+
+    /**
+     * Confirm before deleting a folder.
+     */
+    private void confirmDeleteFolder(CommandFolder folder) {
+        int cmdCount = mCustomCommandManager.getCommandCountInFolder(folder.getId());
+
+        String message = "フォルダ「" + folder.getName() + "」を削除しますか？";
+        if (cmdCount > 0) {
+            message += "\n\n" + cmdCount + "個のコマンドがあります。";
+        }
+
+        String[] options = cmdCount > 0
+            ? new String[]{"フォルダのみ削除（コマンドはルートへ移動）", "フォルダとコマンドを削除", "キャンセル"}
+            : new String[]{"削除", "キャンセル"};
+
+        new AlertDialog.Builder(this)
+            .setTitle("フォルダを削除")
+            .setMessage(message)
+            .setItems(options, (dialog, which) -> {
+                if (cmdCount > 0) {
+                    if (which == 0) {
+                        mCustomCommandManager.deleteFolder(folder.getId(), false);
+                        showToast("フォルダを削除（コマンドは保持）", false);
+                        showCustomCommandsDialog();
+                    } else if (which == 1) {
+                        mCustomCommandManager.deleteFolder(folder.getId(), true);
+                        showToast("フォルダとコマンドを削除", false);
+                        showCustomCommandsDialog();
+                    }
+                } else {
+                    if (which == 0) {
+                        mCustomCommandManager.deleteFolder(folder.getId(), false);
+                        showToast("フォルダを削除", false);
+                        showCustomCommandsDialog();
+                    }
+                }
+            })
+            .show();
+    }
+
+    /**
      * Show actions dialog for a selected custom command.
      */
-    private void showCommandActionsDialog(CustomCommandManager cmdManager, CustomCommand cmd) {
-        String[] actions = {
-            "▶️ 実行",
-            "✏️ 編集",
-            "📋 コピー",
-            "🗑️ 削除"
-        };
+    private void showCommandActionsDialog(CustomCommand cmd, String currentFolderId) {
+        List<String> actionsList = new ArrayList<>();
+        actionsList.add("▶️ 実行");
+        actionsList.add("✏️ 編集");
+        actionsList.add("📋 コピー");
+        actionsList.add("📁 フォルダを移動");
+        actionsList.add("🗑️ 削除");
+
+        String[] actions = actionsList.toArray(new String[0]);
 
         new AlertDialog.Builder(this)
             .setTitle(cmd.getName())
@@ -985,7 +1223,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                         executeCustomCommand(cmd);
                         break;
                     case 1: // Edit
-                        showAddEditCommandDialog(cmdManager, cmd);
+                        showAddEditCommandDialog(cmd, cmd.getFolderId());
                         break;
                     case 2: // Copy
                         ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
@@ -993,12 +1231,45 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                         clipboard.setPrimaryClip(clip);
                         showToast("コピーしました: " + cmd.getCommand(), false);
                         break;
-                    case 3: // Delete
-                        confirmDeleteCommand(cmdManager, cmd);
+                    case 3: // Move to folder
+                        showMoveToFolderDialog(cmd);
+                        break;
+                    case 4: // Delete
+                        confirmDeleteCommand(cmd);
                         break;
                 }
             })
             .setNegativeButton("戻る", null)
+            .show();
+    }
+
+    /**
+     * Show dialog to move a command to a different folder.
+     */
+    private void showMoveToFolderDialog(CustomCommand cmd) {
+        List<CommandFolder> folders = mCustomCommandManager.getAllFolders();
+
+        List<String> options = new ArrayList<>();
+        List<String> folderIds = new ArrayList<>();
+
+        options.add("📂 ルート（フォルダなし）");
+        folderIds.add(null);
+
+        for (CommandFolder folder : folders) {
+            options.add("📁 " + folder.getName());
+            folderIds.add(folder.getId());
+        }
+
+        String[] items = options.toArray(new String[0]);
+
+        new AlertDialog.Builder(this)
+            .setTitle("移動先を選択")
+            .setItems(items, (dialog, which) -> {
+                String targetFolderId = folderIds.get(which);
+                mCustomCommandManager.moveCommandToFolder(cmd.getId(), targetFolderId);
+                showToast("移動しました", false);
+            })
+            .setNegativeButton("キャンセル", null)
             .show();
     }
 
@@ -1024,9 +1295,9 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     /**
      * Show dialog to add or edit a custom command.
      */
-    private void showAddEditCommandDialog(CustomCommandManager cmdManager, CustomCommand existing) {
+    private void showAddEditCommandDialog(CustomCommand existing, String folderId) {
         boolean isEdit = existing != null;
-        
+
         // Create dialog view
         android.widget.LinearLayout layout = new android.widget.LinearLayout(this);
         layout.setOrientation(android.widget.LinearLayout.VERTICAL);
@@ -1045,23 +1316,52 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         if (isEdit) cmdInput.setText(existing.getCommand());
         layout.addView(cmdInput);
 
+        // Folder selector
+        List<CommandFolder> folders = mCustomCommandManager.getAllFolders();
+        final android.widget.Spinner folderSpinner = new android.widget.Spinner(this);
+
+        List<String> folderOptions = new ArrayList<>();
+        List<String> folderIds = new ArrayList<>();
+        folderOptions.add("(フォルダなし)");
+        folderIds.add(null);
+
+        int selectedIndex = 0;
+        String targetFolderId = isEdit ? existing.getFolderId() : folderId;
+
+        for (int i = 0; i < folders.size(); i++) {
+            CommandFolder f = folders.get(i);
+            folderOptions.add(f.getName());
+            folderIds.add(f.getId());
+            if (f.getId().equals(targetFolderId)) {
+                selectedIndex = i + 1;
+            }
+        }
+
+        android.widget.ArrayAdapter<String> adapter = new android.widget.ArrayAdapter<>(
+            this, android.R.layout.simple_spinner_item, folderOptions);
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        folderSpinner.setAdapter(adapter);
+        folderSpinner.setSelection(selectedIndex);
+        layout.addView(folderSpinner);
+
         AlertDialog.Builder builder = new AlertDialog.Builder(this)
             .setTitle(isEdit ? "コマンドを編集" : "新規コマンドを追加")
             .setView(layout)
             .setPositiveButton("保存", (dialog, which) -> {
                 String name = nameInput.getText().toString().trim();
                 String command = cmdInput.getText().toString().trim();
-                
+                String selectedFolderId = folderIds.get(folderSpinner.getSelectedItemPosition());
+
                 if (name.isEmpty() || command.isEmpty()) {
                     showToast("名前とコマンドを入力してください", true);
                     return;
                 }
 
                 if (isEdit) {
-                    cmdManager.updateCommand(existing.getId(), name, command);
+                    mCustomCommandManager.updateCommand(existing.getId(), name, command, selectedFolderId);
                     showToast("更新しました: " + name, false);
                 } else {
-                    cmdManager.saveCommand(name, command);
+                    mCustomCommandManager.saveCommand(name, command, selectedFolderId);
                     showToast("追加しました: " + name, false);
                 }
             })
@@ -1073,15 +1373,93 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     /**
      * Confirm before deleting a command.
      */
-    private void confirmDeleteCommand(CustomCommandManager cmdManager, CustomCommand cmd) {
+    private void confirmDeleteCommand(CustomCommand cmd) {
         new AlertDialog.Builder(this)
             .setTitle("削除の確認")
             .setMessage("コマンド「" + cmd.getName() + "」を削除しますか？")
             .setPositiveButton("削除", (dialog, which) -> {
-                cmdManager.deleteCommand(cmd.getId());
+                mCustomCommandManager.deleteCommand(cmd.getId());
                 showToast("削除しました: " + cmd.getName(), false);
             })
             .setNegativeButton("キャンセル", null)
+            .show();
+    }
+
+    /**
+     * Export custom commands to a JSON file.
+     */
+    private void exportCustomCommands() {
+        String filename = "termux_commands_" + System.currentTimeMillis() + ".json";
+        mExportLauncher.launch(filename);
+    }
+
+    /**
+     * Import custom commands from a JSON file.
+     */
+    private void importCustomCommands() {
+        mImportLauncher.launch(new String[]{"application/json", "*/*"});
+    }
+
+    /**
+     * Handle imported file.
+     */
+    private void handleImportFile(Uri uri) {
+        try {
+            InputStream inputStream = getContentResolver().openInputStream(uri);
+            if (inputStream == null) {
+                showToast("ファイルを開けませんでした", true);
+                return;
+            }
+
+            CustomCommandManager.ImportData data = mCustomCommandManager.parseImportFile(inputStream);
+            inputStream.close();
+
+            // Show import options dialog
+            showImportOptionsDialog(data);
+        } catch (Exception e) {
+            showToast("インポート失敗: " + e.getMessage(), true);
+        }
+    }
+
+    /**
+     * Show import options dialog (merge, replace, or clear and import).
+     */
+    private void showImportOptionsDialog(CustomCommandManager.ImportData data) {
+        String message = "インポート内容:\n" +
+            "• フォルダ: " + data.folders.size() + "個\n" +
+            "• コマンド: " + data.commands.size() + "個\n\n" +
+            "インポート方法を選択してください:";
+
+        String[] options = {
+            "マージ（既存を残して追加のみ）",
+            "上書き（重複は置換）",
+            "すべてクリアしてインポート",
+            "キャンセル"
+        };
+
+        new AlertDialog.Builder(this)
+            .setTitle("インポート")
+            .setMessage(message)
+            .setItems(options, (dialog, which) -> {
+                CustomCommandManager.ImportMode mode;
+                switch (which) {
+                    case 0:
+                        mode = CustomCommandManager.ImportMode.MERGE;
+                        break;
+                    case 1:
+                        mode = CustomCommandManager.ImportMode.REPLACE;
+                        break;
+                    case 2:
+                        mode = CustomCommandManager.ImportMode.CLEAR_AND_IMPORT;
+                        break;
+                    default:
+                        return;
+                }
+
+                CustomCommandManager.ImportResult result = mCustomCommandManager.importData(data, mode);
+                showToast("インポート完了\n" + result.toString(), false);
+                showCustomCommandsDialog();
+            })
             .show();
     }
 

@@ -12,11 +12,23 @@ public class CustomCommand {
     private String id;
     private String name;
     private String command;
+    private String folderId;  // null means root level
+    private int order;
 
     public CustomCommand(String id, String name, String command) {
         this.id = id;
         this.name = name;
         this.command = command;
+        this.folderId = null;
+        this.order = 0;
+    }
+
+    public CustomCommand(String id, String name, String command, String folderId, int order) {
+        this.id = id;
+        this.name = name;
+        this.command = command;
+        this.folderId = folderId;
+        this.order = order;
     }
 
     public String getId() {
@@ -43,6 +55,29 @@ public class CustomCommand {
         this.command = command;
     }
 
+    public String getFolderId() {
+        return folderId;
+    }
+
+    public void setFolderId(String folderId) {
+        this.folderId = folderId;
+    }
+
+    public int getOrder() {
+        return order;
+    }
+
+    public void setOrder(int order) {
+        this.order = order;
+    }
+
+    /**
+     * Check if this command is in the root level (no folder).
+     */
+    public boolean isRootLevel() {
+        return folderId == null || folderId.isEmpty();
+    }
+
     /**
      * Convert to JSON for storage.
      */
@@ -51,6 +86,8 @@ public class CustomCommand {
         json.put("id", id);
         json.put("name", name);
         json.put("command", command);
+        json.put("folderId", folderId);
+        json.put("order", order);
         return json;
     }
 
@@ -61,7 +98,9 @@ public class CustomCommand {
         return new CustomCommand(
             json.getString("id"),
             json.getString("name"),
-            json.getString("command")
+            json.getString("command"),
+            json.optString("folderId", null),
+            json.optInt("order", 0)
         );
     }
 
