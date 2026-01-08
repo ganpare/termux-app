@@ -49,6 +49,11 @@ import com.termux.app.ssh.SshConnectionConfig;
 import com.termux.app.activities.SshConnectionsActivity;
 import com.termux.app.dirnav.DirectoryNavigationManager;
 import com.termux.app.claude.ConversationSyncManager;
+import com.termux.app.eveng1.EvenG1ConfigManager;
+import com.termux.app.eveng1.EvenG1ConnectionConfig;
+import com.termux.app.eveng1.EvenG1Manager;
+import com.termux.app.eveng1.EvenG1DevicePair;
+import com.termux.app.activities.EvenG1ConnectionsActivity;
 import com.termux.app.terminal.TermuxActivityRootView;
 import com.termux.app.terminal.TermuxTerminalSessionActivityClient;
 import com.termux.app.terminal.io.TermuxTerminalExtraKeys;
@@ -325,6 +330,9 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
 
         // Set Claude conversation sync button
         setClaudeSyncButton();
+
+        // Set EVEN G1 AR Glasses buttons
+        setEvenG1Buttons();
 
         registerForContextMenu(mTerminalView);
 
@@ -1581,6 +1589,209 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             Logger.logStackTraceWithMessage("TermuxActivity", "Failed to create SSH session", e);
             showToast("Failed to create SSH session", true);
         }
+    }
+
+    /**
+     * Set up EVEN G1 AR Glasses connection and management buttons.
+     */
+    private void setEvenG1Buttons() {
+        EvenG1ConfigManager configManager = new EvenG1ConfigManager(this);
+        EvenG1Manager g1Manager = EvenG1Manager.getInstance();
+
+        // G1 Connect button - shows scan or saved connections
+        View g1ConnectButton = findViewById(R.id.evenG1ConnectButton);
+        if (g1ConnectButton != null) {
+            g1ConnectButton.setOnClickListener(v -> {
+                // Check Bluetooth permissions
+                if (!checkBluetoothPermissions()) {
+                    requestBluetoothPermissions();
+                    return;
+                }
+
+                // Initialize manager if needed
+                g1Manager.initialize(getApplicationContext(), new EvenG1Manager.ConnectionCallback() {
+                    @Override
+                    public void onDeviceFound(@NonNull String channelNumber, @NonNull String leftName, @NonNull String rightName) {
+                        runOnUiThread(() -> {
+                            showToast("Found G1 Channel " + channelNumber, false);
+                        });
+                    }
+
+                    @Override
+                    public void onConnected(@NonNull EvenG1DevicePair pair) {
+                        runOnUiThread(() -> {
+                            showToast("Connected to EVEN G1!", false);
+                            // Show test send dialog
+                            showG1TestSendDialog();
+                        });
+                    }
+
+                    @Override
+                    public void onDisconnected() {
+                        runOnUiThread(() -> {
+                            showToast("Disconnected from EVEN G1", true);
+                        });
+                    }
+
+                    @Override
+                    public void onConnectionFailed(@NonNull String error) {
+                        runOnUiThread(() -> {
+                            showToast("Connection failed: " + error, true);
+                        });
+                    }
+
+                    @Override
+                    public void onDataReceived(boolean isLeft, @NonNull byte[] data) {
+                        // Handle received data from glasses (for future implementation)
+                        Logger.logDebug("TermuxActivity", "Received data from " +
+                            (isLeft ? "left" : "right") + ": " + data.length + " bytes");
+                    }
+                });
+
+                // Show connection dialog
+                showG1ConnectionDialog(configManager, g1Manager);
+            });
+        }
+
+        // G1 Manage button - opens G1 connections management activity
+        View g1ManageButton = findViewById(R.id.evenG1ManageButton);
+        if (g1ManageButton != null) {
+            g1ManageButton.setOnClickListener(v -> {
+                Intent intent = new Intent(this, EvenG1ConnectionsActivity.class);
+                startActivity(intent);
+            });
+        }
+    }
+
+    /**
+     * Check if Bluetooth permissions are granted.
+     */
+    private boolean checkBluetoothPermissions() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            // Android 12+ (API 31+)
+            return checkSelfPermission(android.Manifest.permission.BLUETOOTH_SCAN) == android.content.pm.PackageManager.PERMISSION_GRANTED &&
+                   checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) == android.content.pm.PackageManager.PERMISSION_GRANTED;
+        } else {
+            // Android 11 and below
+            return checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED;
+        }
+    }
+
+    /**
+     * Request Bluetooth permissions.
+     */
+    private void requestBluetoothPermissions() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            // Android 12+ (API 31+)
+            requestPermissions(new String[]{
+                android.Manifest.permission.BLUETOOTH_SCAN,
+                android.Manifest.permission.BLUETOOTH_CONNECT
+            }, 1001);
+        } else {
+            // Android 11 and below
+            requestPermissions(new String[]{
+                android.Manifest.permission.ACCESS_FINE_LOCATION
+            }, 1001);
+        }
+    }
+
+    /**
+     * Show G1 connection dialog.
+     */
+    private void showG1ConnectionDialog(com.termux.app.eveng1.EvenG1ConfigManager configManager,
+                                       com.termux.app.eveng1.EvenG1Manager g1Manager) {
+        List<com.termux.app.eveng1.EvenG1ConnectionConfig> configs = configManager.loadConfigs();
+
+        // Create dialog options
+        List<String> options = new ArrayList<>();
+        options.add("Scan for new devices");
+        for (com.termux.app.eveng1.EvenG1ConnectionConfig config : configs) {
+            options.add(config.toString());
+        }
+
+        new AlertDialog.Builder(this)
+            .setTitle("EVEN G1 Connection")
+            .setItems(options.toArray(new String[0]), (dialog, which) -> {
+                if (which == 0) {
+                    // Scan for new devices
+                    showToast("Scanning for EVEN G1 devices...", false);
+                    g1Manager.startScan();
+
+                    // Show scanning dialog with discovered devices
+                    new android.os.Handler().postDelayed(() -> {
+                        List<com.termux.app.eveng1.EvenG1Device> devices = g1Manager.getDiscoveredDevices();
+                        List<String> channels = new ArrayList<>();
+                        for (com.termux.app.eveng1.EvenG1Device device : devices) {
+                            String channel = device.getChannelNumber();
+                            if (!channels.contains(channel)) {
+                                channels.add(channel);
+                            }
+                        }
+
+                        if (channels.isEmpty()) {
+                            showToast("No EVEN G1 devices found", true);
+                            g1Manager.stopScan();
+                            return;
+                        }
+
+                        g1Manager.stopScan();
+
+                        // Show channel selection
+                        new AlertDialog.Builder(this)
+                            .setTitle("Select Channel")
+                            .setItems(channels.toArray(new String[0]), (dlg, idx) -> {
+                                String selectedChannel = channels.get(idx);
+                                g1Manager.connect(selectedChannel);
+                                showToast("Connecting to Channel " + selectedChannel + "...", false);
+                            })
+                            .setNegativeButton("Cancel", null)
+                            .show();
+                    }, 5000); // 5 second scan
+                } else {
+                    // Connect to saved configuration
+                    com.termux.app.eveng1.EvenG1ConnectionConfig config = configs.get(which - 1);
+                    // For saved configs, we would need to implement reconnection by MAC address
+                    showToast("Connecting to " + config.getName() + "...", false);
+                    // TODO: Implement saved connection
+                }
+            })
+            .setNegativeButton("Cancel", null)
+            .show();
+    }
+
+    /**
+     * Show G1 test send dialog.
+     */
+    private void showG1TestSendDialog() {
+        final EditText input = new EditText(this);
+        input.setHint("Enter text to display on G1");
+        input.setText("Hello from Termux!");
+
+        new AlertDialog.Builder(this)
+            .setTitle("Send Text to EVEN G1")
+            .setView(input)
+            .setPositiveButton("Send", (dialog, which) -> {
+                String text = input.getText().toString();
+                if (!text.isEmpty()) {
+                    com.termux.app.eveng1.EvenG1Manager manager = com.termux.app.eveng1.EvenG1Manager.getInstance();
+                    android.os.Handler handler = new android.os.Handler();
+
+                    com.termux.app.eveng1.EvenG1Protocol.sendText(manager, text, handler,
+                        new com.termux.app.eveng1.EvenG1Protocol.TextSendCallback() {
+                            @Override
+                            public void onSuccess() {
+                                runOnUiThread(() -> showToast("Text sent successfully!", false));
+                            }
+
+                            @Override
+                            public void onFailure(@NonNull String error) {
+                                runOnUiThread(() -> showToast("Send failed: " + error, true));
+                            }
+                        });
+                }
+            })
+            .setNegativeButton("Cancel", null)
+            .show();
     }
 
     /**

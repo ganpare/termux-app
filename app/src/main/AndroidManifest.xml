@@ -37,6 +37,26 @@
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" tools:ignore="ProtectedPermissions" />
     <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
 
+    <!-- Bluetooth LE permissions for EVEN G1 AR Glasses -->
+    <!-- For Android 12+ (API 31+) -->
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="s" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"
+        tools:targetApi="s" />
+
+    <!-- For Android 11 and below -->
+    <uses-permission android:name="android.permission.BLUETOOTH"
+        android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN"
+        android:maxSdkVersion="30" />
+
+    <!-- Location permission (required for BLE scan on older Android versions) -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+
+    <!-- BLE hardware requirement -->
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false"/>
+
     <application
         android:name=".app.TermuxApplication"
         android:allowBackup="false"
@@ -107,6 +127,13 @@
             android:name=".app.activities.SshConnectionsActivity"
             android:exported="false"
             android:label="SSH Connections"
+            android:parentActivityName=".app.TermuxActivity"
+            android:theme="@style/Theme.TermuxApp.DayNight.NoActionBar" />
+
+        <activity
+            android:name=".app.activities.EvenG1ConnectionsActivity"
+            android:exported="false"
+            android:label="EVEN G1 Connections"
             android:parentActivityName=".app.TermuxActivity"
             android:theme="@style/Theme.TermuxApp.DayNight.NoActionBar" />
 
