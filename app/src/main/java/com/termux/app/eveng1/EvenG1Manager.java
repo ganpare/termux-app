@@ -30,6 +30,9 @@ import java.util.UUID;
 /**
  * Manages Bluetooth LE connections to EVEN G1 AR Glasses.
  * Singleton pattern for centralized connection management.
+ * 
+ * IMPORTANT: EVEN G1 requires sequential connection - LEFT device first, then RIGHT.
+ * Connecting both simultaneously causes connection failures.
  */
 public class EvenG1Manager {
 
@@ -60,17 +63,11 @@ public class EvenG1Manager {
     public interface ConnectionCallback {
         /**
          * Called when a device pair is found during scan.
-         *
-         * @param channelNumber Channel number
-         * @param leftName Left device name
-         * @param rightName Right device name
          */
         void onDeviceFound(@NonNull String channelNumber, @NonNull String leftName, @NonNull String rightName);
 
         /**
          * Called when both devices are connected.
-         *
-         * @param pair Connected device pair
          */
         void onConnected(@NonNull EvenG1DevicePair pair);
 
@@ -81,16 +78,11 @@ public class EvenG1Manager {
 
         /**
          * Called when connection fails.
-         *
-         * @param error Error message
          */
         void onConnectionFailed(@NonNull String error);
 
         /**
          * Called when data is received from glasses.
-         *
-         * @param isLeft true if from left device
-         * @param data Received data
          */
         void onDataReceived(boolean isLeft, @NonNull byte[] data);
     }
@@ -106,11 +98,6 @@ public class EvenG1Manager {
         this.isScanning = false;
     }
 
-    /**
-     * Gets the singleton instance.
-     *
-     * @return Manager instance
-     */
     @NonNull
     public static synchronized EvenG1Manager getInstance() {
         if (instance == null) {
@@ -125,14 +112,12 @@ public class EvenG1Manager {
 
     /**
      * Initializes the manager.
-     *
-     * @param context Application context
-     * @param callback Callback for events
      */
     public void initialize(@NonNull Context context, @Nullable ConnectionCallback callback) {
         this.context = context.getApplicationContext();
         this.callback = callback;
         this.bluetoothManager = (BluetoothManager) context.getSystemService(Context.BLUETOOTH_SERVICE);
+        
         if (bluetoothManager != null) {
             this.bluetoothAdapter = bluetoothManager.getAdapter();
             if (bluetoothAdapter != null) {
@@ -144,8 +129,6 @@ public class EvenG1Manager {
 
     /**
      * Sets the callback.
-     *
-     * @param callback Callback for events
      */
     public void setCallback(@Nullable ConnectionCallback callback) {
         this.callback = callback;
@@ -160,18 +143,25 @@ public class EvenG1Manager {
      */
     @SuppressLint("MissingPermission")
     public void startScan() {
-        if (bluetoothAdapter == null || !bluetoothAdapter.isEnabled()) {
-            notifyConnectionFailed("Bluetooth is not enabled");
+        if (bluetoothAdapter == null) {
+            notifyConnectionFailed("Bluetooth adapter not available. Please restart the app.");
+            return;
+        }
+        
+        if (!bluetoothAdapter.isEnabled()) {
+            notifyConnectionFailed("Bluetooth is disabled. Please enable Bluetooth.");
             return;
         }
 
         if (bluetoothLeScanner == null) {
-            notifyConnectionFailed("BLE scanner not available");
-            return;
+            bluetoothLeScanner = bluetoothAdapter.getBluetoothLeScanner();
+            if (bluetoothLeScanner == null) {
+                notifyConnectionFailed("BLE scanner not available. Is Bluetooth enabled?");
+                return;
+            }
         }
 
         if (isScanning) {
-            Logger.logDebug(LOG_TAG, "Already scanning");
             return;
         }
 
@@ -182,14 +172,20 @@ public class EvenG1Manager {
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build();
 
-        bluetoothLeScanner.startScan(null, settings, scanCallback);
-        Logger.logDebug(LOG_TAG, "Started BLE scan");
+        try {
+            bluetoothLeScanner.startScan(null, settings, scanCallback);
+            Logger.logDebug(LOG_TAG, "Started BLE scan");
+        } catch (Exception e) {
+            Logger.logStackTraceWithMessage(LOG_TAG, "Failed to start scan", e);
+            isScanning = false;
+            notifyConnectionFailed("Failed to start scan: " + e.getMessage());
+            return;
+        }
 
         // Auto-stop scan after timeout
         mainHandler.postDelayed(() -> {
             if (isScanning) {
                 stopScan();
-                Logger.logDebug(LOG_TAG, "Scan timeout");
             }
         }, EvenG1Constants.SCAN_TIMEOUT_MS);
     }
@@ -230,6 +226,8 @@ public class EvenG1Manager {
             if (evenDevice == null) {
                 return;
             }
+            
+            Logger.logDebug(LOG_TAG, "EVEN G1 device found: " + name + " (Channel: " + evenDevice.getChannelNumber() + ")");
 
             // Check if already discovered
             if (discoveredDevices.stream().anyMatch(d -> d.getAddress().equals(address))) {
@@ -237,7 +235,6 @@ public class EvenG1Manager {
             }
 
             discoveredDevices.add(evenDevice);
-            Logger.logDebug(LOG_TAG, "Found device: " + name);
 
             // Check for pair
             String channelNum = evenDevice.getChannelNumber();
@@ -281,8 +278,7 @@ public class EvenG1Manager {
 
     /**
      * Connects to a device pair by channel number.
-     *
-     * @param channelNumber Channel number to connect
+     * IMPORTANT: Connects LEFT first, then RIGHT sequentially.
      */
     @SuppressLint("MissingPermission")
     public void connect(@NonNull String channelNumber) {
@@ -304,12 +300,45 @@ public class EvenG1Manager {
         connectedPair = new EvenG1DevicePair(left, right);
         Logger.logDebug(LOG_TAG, "Connecting to channel " + channelNumber);
 
-        // Connect to both devices
         BluetoothDevice leftBtDevice = bluetoothAdapter.getRemoteDevice(left.getAddress());
-        BluetoothDevice rightBtDevice = bluetoothAdapter.getRemoteDevice(right.getAddress());
+        final EvenG1Device finalLeft = left;
+        
+        // Connect LEFT first (RIGHT will connect after LEFT succeeds in onServicesDiscovered)
+        try {
+            BluetoothGatt leftGatt = leftBtDevice.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE);
+            if (leftGatt != null) {
+                finalLeft.setGatt(leftGatt);
+                Logger.logDebug(LOG_TAG, "Connecting to LEFT device...");
+            } else {
+                notifyConnectionFailed("Failed to create GATT connection to LEFT device");
+            }
+        } catch (Exception e) {
+            Logger.logStackTraceWithMessage(LOG_TAG, "connectGatt failed", e);
+            notifyConnectionFailed("Connection error: " + e.getMessage());
+        }
+    }
 
-        leftBtDevice.connectGatt(context, false, gattCallback);
-        rightBtDevice.connectGatt(context, false, gattCallback);
+    /**
+     * Connects to the RIGHT device after LEFT is connected.
+     */
+    @SuppressLint("MissingPermission")
+    private void connectRightDevice() {
+        if (connectedPair == null || connectedPair.getRightDevice() == null) {
+            return;
+        }
+        
+        EvenG1Device right = connectedPair.getRightDevice();
+        BluetoothDevice rightBtDevice = bluetoothAdapter.getRemoteDevice(right.getAddress());
+        
+        try {
+            BluetoothGatt rightGatt = rightBtDevice.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE);
+            if (rightGatt != null) {
+                right.setGatt(rightGatt);
+                Logger.logDebug(LOG_TAG, "Connecting to RIGHT device...");
+            }
+        } catch (Exception e) {
+            Logger.logStackTraceWithMessage(LOG_TAG, "connectGatt failed for right", e);
+        }
     }
 
     /**
@@ -345,8 +374,6 @@ public class EvenG1Manager {
 
     /**
      * Checks if connected.
-     *
-     * @return true if both devices connected
      */
     public boolean isConnected() {
         return connectedPair != null && connectedPair.isBothConnected();
@@ -360,16 +387,18 @@ public class EvenG1Manager {
         @Override
         @SuppressLint("MissingPermission")
         public void onConnectionStateChange(BluetoothGatt gatt, int status, int newState) {
+            String address = gatt.getDevice().getAddress();
+            
             if (newState == BluetoothGatt.STATE_CONNECTED) {
                 if (status == BluetoothGatt.GATT_SUCCESS) {
-                    Logger.logDebug(LOG_TAG, "Connected to " + gatt.getDevice().getAddress());
+                    Logger.logDebug(LOG_TAG, "Connected to " + address);
                     gatt.discoverServices();
                 } else {
                     Logger.logError(LOG_TAG, "Connection failed: status=" + status);
                     mainHandler.post(() -> notifyConnectionFailed("Connection failed: " + status));
                 }
             } else if (newState == BluetoothGatt.STATE_DISCONNECTED) {
-                Logger.logDebug(LOG_TAG, "Disconnected from " + gatt.getDevice().getAddress());
+                Logger.logDebug(LOG_TAG, "Disconnected from " + address + " (status=" + status + ")");
                 updateDeviceState(gatt, false, null);
                 if (connectedPair != null && !connectedPair.isBothConnected()) {
                     mainHandler.post(() -> {
@@ -384,6 +413,8 @@ public class EvenG1Manager {
         @Override
         @SuppressLint("MissingPermission")
         public void onServicesDiscovered(BluetoothGatt gatt, int status) {
+            String address = gatt.getDevice().getAddress();
+            
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 Logger.logError(LOG_TAG, "Service discovery failed: " + status);
                 return;
@@ -392,6 +423,7 @@ public class EvenG1Manager {
             BluetoothGattService service = gatt.getService(UUID.fromString(EvenG1Constants.SERVICE_UUID));
             if (service == null) {
                 Logger.logError(LOG_TAG, "Nordic UART Service not found");
+                mainHandler.post(() -> notifyConnectionFailed("UART Service not found on device"));
                 return;
             }
 
@@ -402,6 +434,7 @@ public class EvenG1Manager {
 
             if (readChar == null || writeChar == null) {
                 Logger.logError(LOG_TAG, "Required characteristics not found");
+                mainHandler.post(() -> notifyConnectionFailed("Required characteristics not found"));
                 return;
             }
 
@@ -423,10 +456,24 @@ public class EvenG1Manager {
 
             // Update device state
             updateDeviceState(gatt, true, writeChar);
+            Logger.logDebug(LOG_TAG, "Device setup complete: " + address);
 
-            // Check if both connected
+            // Check connection status and connect RIGHT if needed
+            boolean leftConnected = connectedPair != null && connectedPair.getLeftDevice() != null && connectedPair.getLeftDevice().isConnected();
+            boolean rightConnected = connectedPair != null && connectedPair.getRightDevice() != null && connectedPair.getRightDevice().isConnected();
+            
+            // If LEFT just connected and RIGHT is not yet connected, connect RIGHT now
+            if (leftConnected && !rightConnected && connectedPair != null && connectedPair.getRightDevice() != null) {
+                EvenG1Device rightDevice = connectedPair.getRightDevice();
+                if (rightDevice.getGatt() == null) {
+                    Logger.logDebug(LOG_TAG, "LEFT connected, now connecting RIGHT...");
+                    mainHandler.postDelayed(() -> connectRightDevice(), 500);
+                }
+            }
+            
+            // Both connected - notify success
             if (connectedPair != null && connectedPair.isBothConnected()) {
-                Logger.logDebug(LOG_TAG, "Both devices connected");
+                Logger.logDebug(LOG_TAG, "Both devices connected!");
                 startHeartbeat();
                 mainHandler.post(() -> {
                     if (callback != null) {
@@ -485,15 +532,11 @@ public class EvenG1Manager {
 
     /**
      * Sends data to both devices.
-     *
-     * @param data Data to send
-     * @return true if sent successfully to both
      */
     public boolean sendData(@NonNull byte[] data) {
         if (connectedPair == null) {
             return false;
         }
-
         boolean leftResult = sendToLeft(data);
         boolean rightResult = sendToRight(data);
         return leftResult && rightResult;
@@ -501,9 +544,6 @@ public class EvenG1Manager {
 
     /**
      * Sends data to left device only.
-     *
-     * @param data Data to send
-     * @return true if sent successfully
      */
     public boolean sendToLeft(@NonNull byte[] data) {
         if (connectedPair == null || connectedPair.getLeftDevice() == null) {
@@ -514,9 +554,6 @@ public class EvenG1Manager {
 
     /**
      * Sends data to right device only.
-     *
-     * @param data Data to send
-     * @return true if sent successfully
      */
     public boolean sendToRight(@NonNull byte[] data) {
         if (connectedPair == null || connectedPair.getRightDevice() == null) {
@@ -529,9 +566,6 @@ public class EvenG1Manager {
     // Heartbeat
     // ========================
 
-    /**
-     * Starts automatic heartbeat transmission.
-     */
     private void startHeartbeat() {
         stopHeartbeat();
 
@@ -551,14 +585,10 @@ public class EvenG1Manager {
         Logger.logDebug(LOG_TAG, "Started heartbeat");
     }
 
-    /**
-     * Stops heartbeat transmission.
-     */
     private void stopHeartbeat() {
         if (heartbeatRunnable != null) {
             heartbeatHandler.removeCallbacks(heartbeatRunnable);
             heartbeatRunnable = null;
-            Logger.logDebug(LOG_TAG, "Stopped heartbeat");
         }
     }
 
@@ -574,21 +604,11 @@ public class EvenG1Manager {
         });
     }
 
-    /**
-     * Gets the connected device pair.
-     *
-     * @return Connected pair, or null if not connected
-     */
     @Nullable
     public EvenG1DevicePair getConnectedPair() {
         return connectedPair;
     }
 
-    /**
-     * Gets discovered devices.
-     *
-     * @return List of discovered devices
-     */
     @NonNull
     public List<EvenG1Device> getDiscoveredDevices() {
         return new ArrayList<>(discoveredDevices);

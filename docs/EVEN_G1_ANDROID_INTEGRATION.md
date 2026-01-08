@@ -1149,13 +1149,87 @@ class TextPaginator(private val manager: EvenG1Manager) {
 | 接続が切れる | ハートビートなし | 15秒間隔でハートビートを送信 |
 | テキストが表示されない | パケット分割エラー | パケット間に50ms程度の遅延を入れる |
 | 片方しか接続できない | 左右両方への接続が必要 | 必ず左右ペアで接続 |
+| connectGatt後にコールバックが来ない | 他アプリが接続中 | 公式アプリを強制停止 |
+| status=139でdisconnect | 左右同時接続の競合 | 左→右の順次接続に変更 |
+
+### 🔴 重要: 順次接続パターン
+
+**EVEN G1は左右同時接続に対応していません。** 必ず以下の順序で接続してください：
+
+```
+1. LEFT デバイスに connectGatt()
+2. LEFT の onServicesDiscovered() を待つ
+3. LEFT 接続完了後、500ms待機
+4. RIGHT デバイスに connectGatt()
+5. RIGHT の onServicesDiscovered() を待つ
+6. 両方接続完了 → 成功コールバック
+```
+
+**悪い例（同時接続 - 失敗する）:**
+```kotlin
+// ❌ これは動作しません
+leftDevice.connectGatt(...)
+rightDevice.connectGatt(...)  // 左右同時に接続しようとすると失敗
+```
+
+**良い例（順次接続 - 成功する）:**
+```kotlin
+// ✅ 正しいパターン
+leftDevice.connectGatt(context, false, object : BluetoothGattCallback() {
+    override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+        // LEFT接続完了後にRIGHTを接続
+        handler.postDelayed({
+            rightDevice.connectGatt(...)
+        }, 500)
+    }
+})
+```
+
+### 公式アプリとの競合
+
+EVEN G1の公式アプリがバックグラウンドで動作していると、BLE接続が占有されてしまいます。
+
+**症状:**
+- `connectGatt()` は成功するが `onConnectionStateChange()` が呼ばれない
+- `status=139` (GATT_ERROR) でdisconnectされる
+
+**解決策:**
+1. **公式アプリを強制停止**: 設定 → アプリ → EVEN G1 → 強制停止
+2. **Bluetoothを再起動**: Bluetooth OFF → ON
+3. **EVEN G1を再起動**: ケースに入れて5秒待ち、取り出す
+4. **スマホを再起動**: 最も確実な方法
+
+### ペアリングの問題
+
+初回接続時に「ペア設定しますか？」ダイアログが表示されます。
+
+- **必ず「はい」を選択してください**
+- 左右両方のデバイスに対してペアリングが必要です
+- ペアリングが完了していない場合、接続がタイムアウトします
+
+### デバイス名パターン
+
+EVEN G1のデバイス名は以下の形式です：
+
+```
+Even G1_{チャンネル番号}_{L/R}_{デバイスID}
+
+例:
+- Even G1_19_L_6DDD88  (左側、チャンネル19)
+- Even G1_19_R_80314A  (右側、チャンネル19)
+```
+
+正規表現パターン: `Even G1_\d+_[LR]_\w+`
 
 ### デバッグTIPS
 
-```kotlin
-// BLEログを詳細に出力
+```bash
+# BLEログを詳細に出力
 adb shell setprop log.tag.BluetoothGatt VERBOSE
 adb shell setprop log.tag.BluetoothAdapter VERBOSE
+
+# アプリのログを確認
+adb logcat | grep -E "EvenG1|BluetoothGatt"
 ```
 
 ---
@@ -1166,4 +1240,4 @@ adb shell setprop log.tag.BluetoothAdapter VERBOSE
 
 ---
 
-最終更新: 2026-01-08
+最終更新: 2026-01-08 (順次接続パターン追記)

@@ -14,13 +14,14 @@ import java.util.regex.Pattern;
 
 /**
  * Represents a single EVEN G1 device (left or right).
- * Device name format: G{channel}_{L/R}_{ID}
- * Example: G1_L_001, G1_R_001
+ * Device name format: Even G1_{channel}_{L/R}_{ID}
+ * Example: Even G1_19_L_6DDD88, Even G1_19_R_80314A
  */
 public class EvenG1Device {
 
     private static final String LOG_TAG = "EvenG1Device";
-    private static final Pattern DEVICE_NAME_PATTERN = Pattern.compile("G\\d+_[LR]_\\w+");
+    // Pattern: "Even G1_" + channel number + "_L_" or "_R_" + device ID
+    private static final Pattern DEVICE_NAME_PATTERN = Pattern.compile("Even G1_\\d+_[LR]_\\w+");
 
     private final String name;
     private final String address;
@@ -60,13 +61,15 @@ public class EvenG1Device {
             return null;
         }
 
+        // Name format: "Even G1_19_L_6DDD88"
+        // Split by "_": ["Even G1", "19", "L", "6DDD88"]
         String[] parts = name.split("_");
-        if (parts.length < 3) {
+        if (parts.length < 4) {
             return null;
         }
 
-        // Extract channel number (e.g., "G1" -> "1")
-        String channelNumber = parts[0].substring(1);
+        // Extract channel number (e.g., "19" from parts[1])
+        String channelNumber = parts[1];
 
         return new EvenG1Device(name, address, channelNumber);
     }
