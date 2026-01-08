@@ -11,17 +11,37 @@ import java.util.List;
 public class ByobuCommandHelper {
 
     /**
+     * Command type enumeration.
+     */
+    public enum CommandType {
+        /** Normal shell command (text) */
+        SHELL_COMMAND,
+        /** Function key (escape sequence) */
+        FUNCTION_KEY,
+        /** Info only (not executable) */
+        INFO_ONLY
+    }
+
+    /**
      * Represents a byobu command with description.
      */
     public static class ByobuCommand {
         private final String command;
         private final String description;
         private final String category;
+        private final CommandType type;
+        private final String escapeSequence;
 
         public ByobuCommand(String category, String description, String command) {
+            this(category, description, command, CommandType.SHELL_COMMAND, null);
+        }
+
+        public ByobuCommand(String category, String description, String command, CommandType type, String escapeSequence) {
             this.category = category;
             this.description = description;
             this.command = command;
+            this.type = type;
+            this.escapeSequence = escapeSequence;
         }
 
         public String getCommand() {
@@ -36,12 +56,49 @@ public class ByobuCommandHelper {
             return category;
         }
 
+        public CommandType getType() {
+            return type;
+        }
+
+        public String getEscapeSequence() {
+            return escapeSequence;
+        }
+
+        public boolean isExecutable() {
+            return type != CommandType.INFO_ONLY;
+        }
+
         @NonNull
         @Override
         public String toString() {
             return description + ":\n" + command;
         }
     }
+
+    // Function key escape sequences (VT100/xterm style)
+    public static final String ESC_F1 = "\u001bOP";
+    public static final String ESC_F2 = "\u001bOQ";
+    public static final String ESC_F3 = "\u001bOR";
+    public static final String ESC_F4 = "\u001bOS";
+    public static final String ESC_F5 = "\u001b[15~";
+    public static final String ESC_F6 = "\u001b[17~";
+    public static final String ESC_F7 = "\u001b[18~";
+    public static final String ESC_F8 = "\u001b[19~";
+    public static final String ESC_F9 = "\u001b[20~";
+    public static final String ESC_F10 = "\u001b[21~";
+    public static final String ESC_F11 = "\u001b[23~";
+    public static final String ESC_F12 = "\u001b[24~";
+
+    // Shift+Function key escape sequences
+    public static final String ESC_SHIFT_F2 = "\u001b[1;2Q";
+    public static final String ESC_SHIFT_F3 = "\u001b[1;2R";
+    public static final String ESC_SHIFT_F4 = "\u001b[1;2S";
+
+    // Arrow keys with Shift
+    public static final String ESC_SHIFT_UP = "\u001b[1;2A";
+    public static final String ESC_SHIFT_DOWN = "\u001b[1;2B";
+    public static final String ESC_SHIFT_RIGHT = "\u001b[1;2C";
+    public static final String ESC_SHIFT_LEFT = "\u001b[1;2D";
 
     /**
      * Get a list of commonly used byobu commands organized by category.
@@ -68,14 +125,27 @@ public class ByobuCommandHelper {
         commands.add(new ByobuCommand("ペイン管理", "ペインを選択", "byobu select-pane -t <pane_index>"));
         commands.add(new ByobuCommand("ペイン管理", "ペインを閉じる", "byobu kill-pane -t <pane_index>"));
 
-        // Useful Shortcuts (説明用)
-        commands.add(new ByobuCommand("キーバインド", "ヘルプを表示", "F1 (byobu内で)"));
-        commands.add(new ByobuCommand("キーバインド", "新しいウィンドウ", "F2"));
-        commands.add(new ByobuCommand("キーバインド", "前のウィンドウ", "Shift+F2 または F3"));
-        commands.add(new ByobuCommand("キーバインド", "次のウィンドウ", "F2 または F4"));
-        commands.add(new ByobuCommand("キーバインド", "ペイン分割（縦）", "Shift+F2"));
-        commands.add(new ByobuCommand("キーバインド", "ペイン分割（横）", "Shift+F3"));
-        commands.add(new ByobuCommand("キーバインド", "ペイン間移動", "Shift+方向キー"));
+        // Function Keys (executable via escape sequences)
+        commands.add(new ByobuCommand("ファンクションキー", "F1: ヘルプを表示", "F1", CommandType.FUNCTION_KEY, ESC_F1));
+        commands.add(new ByobuCommand("ファンクションキー", "F2: 新しいウィンドウ", "F2", CommandType.FUNCTION_KEY, ESC_F2));
+        commands.add(new ByobuCommand("ファンクションキー", "F3: 前のウィンドウ", "F3", CommandType.FUNCTION_KEY, ESC_F3));
+        commands.add(new ByobuCommand("ファンクションキー", "F4: 次のウィンドウ", "F4", CommandType.FUNCTION_KEY, ESC_F4));
+        commands.add(new ByobuCommand("ファンクションキー", "F5: 再読み込み", "F5", CommandType.FUNCTION_KEY, ESC_F5));
+        commands.add(new ByobuCommand("ファンクションキー", "F6: デタッチ", "F6", CommandType.FUNCTION_KEY, ESC_F6));
+        commands.add(new ByobuCommand("ファンクションキー", "F7: スクロールモード", "F7", CommandType.FUNCTION_KEY, ESC_F7));
+        commands.add(new ByobuCommand("ファンクションキー", "F8: ウィンドウ名変更", "F8", CommandType.FUNCTION_KEY, ESC_F8));
+        commands.add(new ByobuCommand("ファンクションキー", "F9: 設定メニュー", "F9", CommandType.FUNCTION_KEY, ESC_F9));
+
+        // Shift+Function Keys
+        commands.add(new ByobuCommand("Shift+ファンクションキー", "Shift+F2: 水平分割", "Shift+F2", CommandType.FUNCTION_KEY, ESC_SHIFT_F2));
+        commands.add(new ByobuCommand("Shift+ファンクションキー", "Shift+F3: 垂直分割", "Shift+F3", CommandType.FUNCTION_KEY, ESC_SHIFT_F3));
+        commands.add(new ByobuCommand("Shift+ファンクションキー", "Shift+F4: ペイン間移動", "Shift+F4", CommandType.FUNCTION_KEY, ESC_SHIFT_F4));
+
+        // Shift+Arrow Keys
+        commands.add(new ByobuCommand("Shift+矢印キー", "Shift+↑: 上のペインへ", "Shift+Up", CommandType.FUNCTION_KEY, ESC_SHIFT_UP));
+        commands.add(new ByobuCommand("Shift+矢印キー", "Shift+↓: 下のペインへ", "Shift+Down", CommandType.FUNCTION_KEY, ESC_SHIFT_DOWN));
+        commands.add(new ByobuCommand("Shift+矢印キー", "Shift+←: 左のペインへ", "Shift+Left", CommandType.FUNCTION_KEY, ESC_SHIFT_LEFT));
+        commands.add(new ByobuCommand("Shift+矢印キー", "Shift+→: 右のペインへ", "Shift+Right", CommandType.FUNCTION_KEY, ESC_SHIFT_RIGHT));
 
         // Advanced
         commands.add(new ByobuCommand("高度な操作", "コマンドを送信", "byobu send-keys -t <target> '<command>' C-m"));

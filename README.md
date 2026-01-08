@@ -1,4 +1,43 @@
-# Termux application
+# Termux application (Fork)
+
+> **🔀 This is a fork of [termux/termux-app](https://github.com/termux/termux-app)**
+>
+> This fork adds custom UI features for SSH connection management and byobu session control, designed for power users who frequently work with remote servers via terminal.
+
+## ✨ Fork Features
+
+### SSH Connection Management
+- **SSH Button**: Quick access to saved SSH connections
+- **SSH Settings**: Add, edit, and manage SSH connection configurations
+- **SSH Key Support**: Import and manage SSH private keys
+
+### Byobu Session Integration
+- **SESSIONS Button**: List, attach, create, and kill byobu sessions
+- **HELP Button**: Quick reference for byobu commands with copy/execute functionality
+- Automatic session nesting prevention
+
+### Custom Commands
+- **CUSTOM Button**: Save and execute frequently used commands
+- Add, edit, delete, and reorder custom commands
+- One-tap command execution
+
+## 📋 UI Buttons
+
+| Button | Color | Function |
+|--------|-------|----------|
+| SESSIONS | Blue | Byobu session management |
+| CUSTOM | Orange | Custom command execution |
+| HELP | Purple | Byobu command reference |
+| SSH | Green | Connect to saved SSH hosts |
+| SSH設定 | Gray | Manage SSH configurations |
+
+---
+
+*Below is the original README from [termux/termux-app](https://github.com/termux/termux-app):*
+
+---
+
+# Termux application (Original)
 
 [![Build status](https://github.com/termux/termux-app/workflows/Build/badge.svg)](https://github.com/termux/termux-app/actions)
 [![Testing status](https://github.com/termux/termux-app/workflows/Unit%20tests/badge.svg)](https://github.com/termux/termux-app/actions)

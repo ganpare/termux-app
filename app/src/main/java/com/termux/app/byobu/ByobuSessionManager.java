@@ -54,11 +54,14 @@ public class ByobuSessionManager {
 
     /**
      * Generates the command to attach to a specific byobu session.
+     * If already in a byobu session, detaches first to avoid nested sessions.
      */
     public String getAttachCommand(String sessionName) {
         // Escape single quotes in session name for safety
         String escapedName = sessionName.replace("'", "'\\''");
-        return "byobu attach -t '" + escapedName + "'\n";
+        // Detach from current session if inside one, then attach to target session
+        // Small delay helps avoid terminal escape sequence issues
+        return "if [ -n \"$TMUX\" ]; then byobu detach 2>/dev/null; sleep 0.3; fi; byobu attach -t '" + escapedName + "'\n";
     }
 
     /**

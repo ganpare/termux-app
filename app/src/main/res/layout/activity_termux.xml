@@ -117,16 +117,6 @@
             android:orientation="horizontal">
 
             <com.google.android.material.button.MaterialButton
-                android:id="@+id/testButton"
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="48dp"
-                android:text="TEST"
-                android:textSize="14sp"
-                android:backgroundTint="#FF5722"
-                android:layout_marginEnd="4dp" />
-
-            <com.google.android.material.button.MaterialButton
                 android:id="@+id/byobuSessionsButton"
                 android:layout_width="0dp"
                 android:layout_weight="1"
@@ -134,7 +124,18 @@
                 android:text="SESSIONS"
                 android:textSize="14sp"
                 android:backgroundTint="#2196F3"
-                android:layout_marginStart="4dp" />
+                android:layout_marginEnd="4dp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/customCommandsButton"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="48dp"
+                android:text="CUSTOM"
+                android:textSize="14sp"
+                android:backgroundTint="#FF5722"
+                android:layout_marginStart="4dp"
+                android:layout_marginEnd="4dp" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/byobuCommandsButton"
@@ -172,6 +173,34 @@
                 android:text="SSH設定"
                 android:textSize="14sp"
                 android:backgroundTint="#9E9E9E"
+                android:layout_marginStart="4dp" />
+
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="4dp">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/dirNavButton"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="48dp"
+                android:text="DIR"
+                android:textSize="14sp"
+                android:backgroundTint="#FF9800"
+                android:layout_marginEnd="4dp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/claudeSyncButton"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="48dp"
+                android:text="CLAUDE"
+                android:textSize="14sp"
+                android:backgroundTint="#2196F3"
                 android:layout_marginStart="4dp" />
 
         </LinearLayout>

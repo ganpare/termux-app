@@ -4,25 +4,79 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- Keep in sync with non-adaptive ic_launcher.xml -->
+    <!-- Byobu (屏風) + Cyberpunk themed icon -->
+    
+    <!-- Glow effect layer (outer) -->
+    <path
+        android:fillColor="#FF00FF"
+        android:fillAlpha="0.3"
+        android:pathData="M22,28 L32,24 L32,84 L22,80 Z"/>
+    
+    <!-- Panel 1 (leftmost) - Magenta gradient effect -->
+    <path
+        android:fillColor="#FF00FF"
+        android:pathData="M24,30 L34,26 L34,82 L24,78 Z"/>
+    
+    <!-- Panel 2 - Cyan -->
+    <path
+        android:fillColor="#00FFFF"
+        android:pathData="M36,26 L48,30 L48,78 L36,82 Z"/>
+    
+    <!-- Panel 3 - Green (Neon) -->
+    <path
+        android:fillColor="#00FF88"
+        android:pathData="M50,30 L62,26 L62,82 L50,78 Z"/>
+    
+    <!-- Panel 4 (rightmost) - Purple -->
+    <path
+        android:fillColor="#AA00FF"
+        android:pathData="M64,26 L74,30 L74,78 L64,82 Z"/>
+    
+    <!-- Glow effect layer (outer right) -->
+    <path
+        android:fillColor="#AA00FF"
+        android:fillAlpha="0.3"
+        android:pathData="M76,28 L86,32 L86,76 L76,80 Z"/>
+    
+    <!-- Horizontal scan lines (cyberpunk effect) -->
     <path
         android:fillColor="#FFFFFF"
-        android:pathData="M34,38
-                          h6
-                          l12,16
-                          l-12,16
-                          h-6
-                          l12,-16
-                          "
-        />
-
+        android:fillAlpha="0.15"
+        android:pathData="M20,40 L88,40 L88,42 L20,42 Z"/>
     <path
         android:fillColor="#FFFFFF"
-        android:pathData="M56,66
-                          h18
-                          v4
-                          h-18
-                          "
-        />
+        android:fillAlpha="0.15"
+        android:pathData="M20,52 L88,52 L88,54 L20,54 Z"/>
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillAlpha="0.15"
+        android:pathData="M20,64 L88,64 L88,66 L20,66 Z"/>
+    
+    <!-- Terminal cursor symbol (blinking effect represented) -->
+    <path
+        android:fillColor="#00FF88"
+        android:pathData="M40,44 L44,44 L44,48 L40,48 Z"/>
+    
+    <!-- Digital circuit lines on panels -->
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="0.8"
+        android:strokeAlpha="0.4"
+        android:pathData="M28,36 L28,72"/>
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="0.8"
+        android:strokeAlpha="0.4"
+        android:pathData="M42,38 L42,70"/>
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="0.8"
+        android:strokeAlpha="0.4"
+        android:pathData="M56,36 L56,72"/>
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="0.8"
+        android:strokeAlpha="0.4"
+        android:pathData="M69,38 L69,70"/>
 
 </vector>
