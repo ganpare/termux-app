@@ -1590,6 +1590,9 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             return;
         }
 
+        // Save SSH host for Claude HTTP server connection
+        mCurrentSshHost = config.getHost();
+
         String sshCommand = config.buildSshCommand();
 
         // Create a new terminal session with the SSH command
@@ -2245,36 +2248,20 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     }
 
     // Claude history server settings
-    private static final String CLAUDE_SERVER_SESSION = "claude-history-server";
     private static final int CLAUDE_SERVER_PORT = 8765;
-    private String mLastServerHost = ""; // Remember last used host
+    private String mCurrentSshHost = ""; // SSH host for HTTP server connection
     
     /**
      * Shows dialog to connect to HTTP server.
+     * Uses SSH host automatically if available.
      */
     private void showHttpServerDialog(ConversationSyncManager syncManager) {
-        // Ask for server address
-        android.widget.EditText input = new android.widget.EditText(this);
-        input.setHint("例: 192.168.1.100");
-        if (!mLastServerHost.isEmpty()) {
-            input.setText(mLastServerHost);
+        if (mCurrentSshHost == null || mCurrentSshHost.isEmpty()) {
+            showToast("SSH接続が必要です。SSHボタンで接続してください。", true);
+            return;
         }
         
-        new AlertDialog.Builder(this)
-            .setTitle("HTTPサーバーに接続")
-            .setMessage("サーバーのIPアドレスを入力:\n(ポート: " + CLAUDE_SERVER_PORT + ")")
-            .setView(input)
-            .setPositiveButton("接続", (dialog, which) -> {
-                String host = input.getText().toString().trim();
-                if (host.isEmpty()) {
-                    showToast("アドレスを入力してください", true);
-                    return;
-                }
-                mLastServerHost = host;
-                connectToClaudeServer(host);
-            })
-            .setNegativeButton("キャンセル", null)
-            .show();
+        connectToClaudeServer(mCurrentSshHost);
     }
     
     /**
@@ -2540,24 +2527,31 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             .setTitle("ダウンロード完了")
             .setMessage("ARグラスに送信しますか？\n\n" + localPath)
             .setPositiveButton("送信", (dialog, which) -> {
-                if (!EvenG1Manager.getInstance().isConnected()) {
-                    showToast("ARグラスが接続されていません", true);
-                    return;
-                }
+                try {
+                    if (!EvenG1Manager.getInstance().isConnected()) {
+                        showToast("ARグラスが接続されていません", true);
+                        return;
+                    }
 
-                List<String> comments = ClaudeChatParser.getAgentComments(localPath);
-                if (comments.isEmpty()) {
-                    showToast("エージェントのコメントが見つかりませんでした", true);
-                    return;
-                }
+                    List<String> comments = ClaudeChatParser.getAgentComments(localPath);
+                    if (comments.isEmpty()) {
+                        showToast("エージェントのコメントが見つかりませんでした", true);
+                        return;
+                    }
 
-                String latestComment = comments.get(comments.size() - 1);
-                ArTextPager pager = new ArTextPager(
-                        EvenG1Manager.getInstance(),
-                        new android.os.Handler(android.os.Looper.getMainLooper()),
-                        latestComment);
-                pager.sendCurrentPage(null);
-                showArControllerDialog(pager);
+                    String latestComment = comments.get(comments.size() - 1);
+                    android.util.Log.d("TermuxActivity", "Sending to AR, comment length: " + latestComment.length());
+                    
+                    ArTextPager pager = new ArTextPager(
+                            EvenG1Manager.getInstance(),
+                            new android.os.Handler(android.os.Looper.getMainLooper()),
+                            latestComment);
+                    pager.sendCurrentPage(null);
+                    showArControllerDialog(pager);
+                } catch (Exception e) {
+                    showToast("AR送信エラー: " + e.getMessage(), true);
+                    android.util.Log.e("TermuxActivity", "askSendToAr error", e);
+                }
             })
             .setNegativeButton("閉じる", null)
             .show();
@@ -2596,28 +2590,46 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     }
 
     private void showArControllerDialog(ArTextPager pager) {
-        AlertDialog.Builder builder = new AlertDialog.Builder(this);
-        builder.setTitle("AR View (" + pager.getCurrentPageNum() + "/" + pager.getTotalPages() + ")");
-        builder.setMessage("ARグラスに表示中...");
+        try {
+            if (pager == null || pager.getTotalPages() == 0) {
+                showToast("表示するコンテンツがありません", true);
+                return;
+            }
+            
+            AlertDialog.Builder builder = new AlertDialog.Builder(this);
+            builder.setTitle("AR View (" + pager.getCurrentPageNum() + "/" + pager.getTotalPages() + ")");
+            builder.setMessage("ARグラスに表示中...");
 
-        // Use standard buttons but prevent auto-dismiss
-        builder.setPositiveButton("次へ", null);
-        builder.setNegativeButton("前へ", null);
-        builder.setNeutralButton("閉じる", (dialog, which) -> dialog.dismiss());
+            // Use standard buttons but prevent auto-dismiss
+            builder.setPositiveButton("次へ", null);
+            builder.setNegativeButton("前へ", null);
+            builder.setNeutralButton("閉じる", (dialog, which) -> dialog.dismiss());
 
-        AlertDialog dialog = builder.create();
-        dialog.show();
+            AlertDialog dialog = builder.create();
+            dialog.show();
 
-        // Override onClickListeners to prevent dismiss
-        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
-            pager.nextPage(null);
-            dialog.setTitle("AR View (" + pager.getCurrentPageNum() + "/" + pager.getTotalPages() + ")");
-        });
+            // Override onClickListeners to prevent dismiss
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                try {
+                    pager.nextPage(null);
+                    dialog.setTitle("AR View (" + pager.getCurrentPageNum() + "/" + pager.getTotalPages() + ")");
+                } catch (Exception e) {
+                    showToast("次ページエラー: " + e.getMessage(), true);
+                }
+            });
 
-        dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener(v -> {
-            pager.prevPage(null);
-            dialog.setTitle("AR View (" + pager.getCurrentPageNum() + "/" + pager.getTotalPages() + ")");
-        });
+            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener(v -> {
+                try {
+                    pager.prevPage(null);
+                    dialog.setTitle("AR View (" + pager.getCurrentPageNum() + "/" + pager.getTotalPages() + ")");
+                } catch (Exception e) {
+                    showToast("前ページエラー: " + e.getMessage(), true);
+                }
+            });
+        } catch (Exception e) {
+            showToast("ARダイアログエラー: " + e.getMessage(), true);
+            android.util.Log.e("TermuxActivity", "showArControllerDialog error", e);
+        }
     }
 
     /**
