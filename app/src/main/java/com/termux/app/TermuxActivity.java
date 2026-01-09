@@ -156,6 +156,16 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     private ActivityResultLauncher<String[]> mImportLauncher;
 
     /**
+     * Activity result launcher for selecting Claude history JSONL file.
+     */
+    private ActivityResultLauncher<String[]> mClaudeHistoryLauncher;
+
+    /**
+     * Current ArTextPager for Claude history display on AR glasses.
+     */
+    private com.termux.app.eveng1.ArTextPager mCurrentArPager;
+
+    /**
      * Cached CustomCommandManager instance for import/export operations.
      */
     private CustomCommandManager mCustomCommandManager;
@@ -1055,6 +1065,15 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                         handleImportFile(uri);
                     }
                 });
+
+        // Claude history launcher - opens JSONL files for AR display
+        mClaudeHistoryLauncher = registerForActivityResult(
+                new ActivityResultContracts.OpenDocument(),
+                uri -> {
+                    if (uri != null) {
+                        handleClaudeHistoryFile(uri);
+                    }
+                });
     }
 
     /**
@@ -1710,6 +1729,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         if (isConnected) {
             // Connected state options
             options.add("📤 Send Text to G1");
+            options.add("📄 Claude履歴を読み込む");
             options.add("💾 Save this G1 for quick connect");
             options.add("🔌 Disconnect");
             options.add("🔄 Reconnect (disconnect & scan)");
@@ -1735,18 +1755,21 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                             case 0: // Send text
                                 showG1TestSendDialog();
                                 break;
-                            case 1: // Save current device
+                            case 1: // Load Claude history
+                                openClaudeHistoryFilePicker();
+                                break;
+                            case 2: // Save current device
                                 com.termux.app.eveng1.EvenG1DevicePair pair = g1Manager.getConnectedPair();
                                 if (pair != null) {
                                     configManager.saveCurrentDevice(pair);
                                     showToast("G1 saved for quick connect!", false);
                                 }
                                 break;
-                            case 2: // Disconnect
+                            case 3: // Disconnect
                                 g1Manager.disconnect();
                                 showToast("Disconnected from EVEN G1", false);
                                 break;
-                            case 3: // Reconnect
+                            case 4: // Reconnect
                                 g1Manager.disconnect();
                                 showToast("Disconnected. Scanning...", false);
                                 startG1Scan(g1Manager);
@@ -1862,6 +1885,172 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                     }
                 })
                 .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    /**
+     * Opens file picker to select Claude history JSONL file.
+     */
+    private void openClaudeHistoryFilePicker() {
+        if (mClaudeHistoryLauncher != null) {
+            mClaudeHistoryLauncher.launch(new String[]{"*/*"});
+        } else {
+            showToast("ファイル選択機能が初期化されていません", true);
+        }
+    }
+
+    /**
+     * Handles selected Claude history JSONL file.
+     */
+    private void handleClaudeHistoryFile(android.net.Uri uri) {
+        try {
+            // Read file content
+            java.io.InputStream inputStream = getContentResolver().openInputStream(uri);
+            if (inputStream == null) {
+                showToast("ファイルを開けませんでした", true);
+                return;
+            }
+
+            // Create temp file to pass to parser
+            java.io.File tempFile = new java.io.File(getCacheDir(), "claude_history_temp.jsonl");
+            java.io.FileOutputStream fos = new java.io.FileOutputStream(tempFile);
+            byte[] buffer = new byte[4096];
+            int bytesRead;
+            while ((bytesRead = inputStream.read(buffer)) != -1) {
+                fos.write(buffer, 0, bytesRead);
+            }
+            fos.close();
+            inputStream.close();
+
+            // Parse the file
+            List<String> comments = com.termux.app.claude.ClaudeChatParser.getAgentComments(tempFile.getAbsolutePath());
+            
+            // Clean up temp file
+            tempFile.delete();
+
+            if (comments.isEmpty()) {
+                showToast("Claudeのコメントが見つかりませんでした", true);
+                return;
+            }
+
+            // Combine all comments into one text
+            StringBuilder fullText = new StringBuilder();
+            for (int i = 0; i < comments.size(); i++) {
+                if (i > 0) {
+                    fullText.append("\n\n---\n\n");
+                }
+                fullText.append(comments.get(i));
+            }
+
+            // Create pager and show dialog
+            com.termux.app.eveng1.EvenG1Manager manager = com.termux.app.eveng1.EvenG1Manager.getInstance();
+            if (!manager.isConnected()) {
+                showToast("G1に接続されていません", true);
+                return;
+            }
+
+            android.os.Handler handler = new android.os.Handler(android.os.Looper.getMainLooper());
+            mCurrentArPager = new com.termux.app.eveng1.ArTextPager(manager, handler, fullText.toString());
+
+            showToast(comments.size() + "件のコメント, " + mCurrentArPager.getTotalPages() + "ページ", false);
+            showArPagerDialog();
+
+        } catch (Exception e) {
+            showToast("ファイル読み込みエラー: " + e.getMessage(), true);
+        }
+    }
+
+    /**
+     * Shows AR pager dialog with page navigation controls.
+     */
+    private void showArPagerDialog() {
+        if (mCurrentArPager == null) {
+            showToast("ページャーが初期化されていません", true);
+            return;
+        }
+
+        // Send current page first
+        mCurrentArPager.sendCurrentPage(new com.termux.app.eveng1.EvenG1Protocol.TextSendCallback() {
+            @Override
+            public void onSuccess() {
+                runOnUiThread(() -> showPageNavigationDialog());
+            }
+
+            @Override
+            public void onFailure(@NonNull String error) {
+                runOnUiThread(() -> showToast("送信失敗: " + error, true));
+            }
+        });
+    }
+
+    /**
+     * Shows page navigation dialog for AR display.
+     */
+    private void showPageNavigationDialog() {
+        if (mCurrentArPager == null) return;
+
+        String title = "📖 ページ " + mCurrentArPager.getCurrentPageNum() + " / " + mCurrentArPager.getTotalPages();
+
+        List<String> options = new ArrayList<>();
+        if (mCurrentArPager.hasPrev()) {
+            options.add("⬅️ 前のページ");
+        }
+        if (mCurrentArPager.hasNext()) {
+            options.add("➡️ 次のページ");
+        }
+        options.add("🔄 現在のページを再送信");
+        options.add("❌ 閉じる (ダッシュボードに戻る)");
+
+        new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setItems(options.toArray(new String[0]), (dialog, which) -> {
+                    String selected = options.get(which);
+                    if (selected.startsWith("⬅️")) {
+                        // Previous page
+                        mCurrentArPager.prevPage(new com.termux.app.eveng1.EvenG1Protocol.TextSendCallback() {
+                            @Override
+                            public void onSuccess() {
+                                runOnUiThread(() -> showPageNavigationDialog());
+                            }
+                            @Override
+                            public void onFailure(@NonNull String error) {
+                                runOnUiThread(() -> showToast("送信失敗: " + error, true));
+                            }
+                        });
+                    } else if (selected.startsWith("➡️")) {
+                        // Next page
+                        mCurrentArPager.nextPage(new com.termux.app.eveng1.EvenG1Protocol.TextSendCallback() {
+                            @Override
+                            public void onSuccess() {
+                                runOnUiThread(() -> showPageNavigationDialog());
+                            }
+                            @Override
+                            public void onFailure(@NonNull String error) {
+                                runOnUiThread(() -> showToast("送信失敗: " + error, true));
+                            }
+                        });
+                    } else if (selected.startsWith("🔄")) {
+                        // Resend current page
+                        mCurrentArPager.sendCurrentPage(new com.termux.app.eveng1.EvenG1Protocol.TextSendCallback() {
+                            @Override
+                            public void onSuccess() {
+                                runOnUiThread(() -> showPageNavigationDialog());
+                            }
+                            @Override
+                            public void onFailure(@NonNull String error) {
+                                runOnUiThread(() -> showToast("送信失敗: " + error, true));
+                            }
+                        });
+                    } else {
+                        // Close - exit to dashboard
+                        com.termux.app.eveng1.EvenG1Manager manager = com.termux.app.eveng1.EvenG1Manager.getInstance();
+                        byte[] exitPacket = com.termux.app.eveng1.EvenG1Protocol.createExitToDashboardPacket();
+                        manager.sendData(exitPacket);
+                        mCurrentArPager = null;
+                        showToast("ARディスプレイを終了しました", false);
+                    }
+                })
+                .setCancelable(false)
                 .show();
     }
 
