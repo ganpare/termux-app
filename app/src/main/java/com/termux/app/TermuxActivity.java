@@ -2171,84 +2171,23 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                     .setTitle("Claude 会話履歴")
                     .setItems(new String[] {
                         "🤖 Claude→AR (自動同期)",
-                        "📱 ローカル (.claude/projects/)",
-                        "🌐 HTTP (サーバー経由)",
-                        "📟 リモート (ターミナル経由)"
+                        "👁️ AR Viewを開く",
+                        "🔄 サーバー再起動"
                     }, (dialog, which) -> {
                         if (which == 0) {
                             // Auto AR sync
                             showAutoArSyncDialog();
                             return;
                         }
-                        // Shift index for other options
-                        which = which - 1;
-                        if (which == 0) {
-                            // Local filesystem
-                            showToast("ローカルファイルを検索中...", false);
-                            syncManager.listLocalConversations(1, new ConversationSyncManager.ConversationListCallback() {
-                                @Override
-                                public void onConversationsFound(List<ConversationSyncManager.ConversationFile> conversations) {
-                                    showLocalConversationListDialog(conversations);
-                                }
-
-                                @Override
-                                public void onError(String message) {
-                                    showToast(message, true);
-                                }
-                            });
-                        } else if (which == 1) {
-                            // HTTP server
-                            showHttpServerDialog(syncManager);
-                        } else {
-                            // Remote via SSH - show sub-options
-                            TerminalSession session = getCurrentSession();
-                            if (session == null) {
-                                showToast("アクティブなセッションがありません", true);
-                                return;
-                            }
-
-                            new AlertDialog.Builder(TermuxActivity.this)
-                                .setTitle("リモート取得方法")
-                                .setItems(new String[] {
-                                    "🚀 最新ファイルを直接取得",
-                                    "📋 ファイル一覧から選択"
-                                }, (subDialog, subWhich) -> {
-                                    if (subWhich == 0) {
-                                        // Direct download latest
-                                        showToast("最新ファイルをダウンロード中...", false);
-                                        syncManager.downloadLatestFile(session, new ConversationSyncManager.FileDownloadCallback() {
-                                            @Override
-                                            public void onDownloadComplete(String localPath) {
-                                                runOnUiThread(() -> {
-                                                    showToast("ダウンロード完了: " + localPath, false);
-                                                    // Optionally send to AR
-                                                    askSendToAr(localPath);
-                                                });
-                                            }
-
-                                            @Override
-                                            public void onError(String message) {
-                                                runOnUiThread(() -> showToast("エラー: " + message, true));
-                                            }
-                                        });
-                                    } else {
-                                        // List files first
-                                        showToast("リモートから会話履歴を取得中...", false);
-                                        syncManager.listConversations(session, 1, new ConversationSyncManager.ConversationListCallback() {
-                                            @Override
-                                            public void onConversationsFound(List<ConversationSyncManager.ConversationFile> conversations) {
-                                                showConversationListDialog(conversations, syncManager);
-                                            }
-
-                                            @Override
-                                            public void onError(String message) {
-                                                showToast(message, true);
-                                            }
-                                        });
-                                    }
-                                })
-                                .setNegativeButton("キャンセル", null)
-                                .show();
+                        if (which == 1) {
+                            // Open AR View
+                            openArViewIfAvailable();
+                            return;
+                        }
+                        if (which == 2) {
+                            // Restart server
+                            restartClaudeServer();
+                            return;
                         }
                     })
                     .setNegativeButton("キャンセル", null)
@@ -2399,6 +2338,36 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     }
     
     /**
+     * Restart Claude history server on SSH host.
+     */
+    private void restartClaudeServer() {
+        if (mCurrentSshHost == null || mCurrentSshHost.isEmpty()) {
+            showToast("SSH接続が必要です", true);
+            return;
+        }
+
+        TerminalSession session = getCurrentSession();
+        if (session == null) {
+            showToast("アクティブなセッションがありません", true);
+            return;
+        }
+
+        // Confirm restart
+        new AlertDialog.Builder(this)
+            .setTitle("サーバー再起動")
+            .setMessage("HTTPサーバーを再起動しますか？\n\nホスト: " + mCurrentSshHost + "\nポート: " + CLAUDE_SERVER_PORT)
+            .setPositiveButton("再起動", (dialog, which) -> {
+                // Send restart command to terminal
+                String command = "pkill -f claude-history-server.py; sleep 1; nohup python3 ~/.local/bin/claude-history-server.py > /dev/null 2>&1 &\n";
+                byte[] data = command.getBytes();
+                session.write(data, 0, data.length);
+                showToast("サーバー再起動コマンドを送信しました", false);
+            })
+            .setNegativeButton("キャンセル", null)
+            .show();
+    }
+
+    /**
      * Connect to Claude history server.
      */
     private void connectToClaudeServer(String host) {
@@ -2469,7 +2438,6 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             @Override
             public void onSuccess(String localPath) {
                 showToast("ダウンロード完了!", false);
-                askSendToAr(localPath);
             }
             
             @Override
@@ -2531,7 +2499,6 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             @Override
             public void onSuccess(String localPath) {
                 showToast("ダウンロード完了!", false);
-                askSendToAr(localPath);
             }
             
             @Override
@@ -2561,12 +2528,8 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                     // Show action options
                     new AlertDialog.Builder(TermuxActivity.this)
                             .setTitle(selected.filename)
-                            .setItems(new String[] { "ダウンロードして保存", "ARグラスに送信 (最新のコメント)" }, (subDialog, subWhich) -> {
-                                if (subWhich == 0) {
-                                    downloadConversation(selected, syncManager);
-                                } else {
-                                    parseAndSendToAr(selected, syncManager);
-                                }
+                            .setItems(new String[] { "ダウンロードして保存" }, (subDialog, subWhich) -> {
+                                downloadConversation(selected, syncManager);
                             })
                             .show();
                 })
@@ -2587,141 +2550,13 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
 
         new AlertDialog.Builder(this)
                 .setTitle("ローカルClaude履歴 (" + conversations.size() + ")")
-                .setItems(convNames, (dialog, which) -> {
-                    ConversationSyncManager.ConversationFile selected = conversations.get(which);
-
-                    // Show action options
-                    new AlertDialog.Builder(TermuxActivity.this)
-                            .setTitle(selected.filename)
-                            .setItems(new String[] { "ARグラスに送信" }, (subDialog, subWhich) -> {
-                                parseAndSendLocalToAr(selected);
-                            })
-                            .show();
-                })
-                .setNegativeButton("キャンセル", null)
+                .setMessage("AR表示機能は削除されました。\nClaude→AR自動同期を使用してください。")
+                .setPositiveButton("OK", null)
                 .show();
     }
 
-    /**
-     * Downloads and sends the conversation to AR glasses (remote).
-     */
-    private void parseAndSendToAr(ConversationSyncManager.ConversationFile conversation,
-            ConversationSyncManager syncManager) {
-        TerminalSession session = getCurrentSession();
-        if (session == null) {
-            showToast("アクティブなセッションがありません", true);
-            return;
-        }
 
-        if (!EvenG1Manager.getInstance().isConnected()) {
-            showToast("ARグラスが接続されていません", true);
-            return;
-        }
 
-        showToast("AR用に取得中: " + conversation.filename, false);
-
-        syncManager.downloadFile(session, conversation, new ConversationSyncManager.FileDownloadCallback() {
-            @Override
-            public void onDownloadComplete(String localPath) {
-                // Parse file to get comments
-                List<String> comments = ClaudeChatParser.getAgentComments(localPath);
-                if (comments.isEmpty()) {
-                    runOnUiThread(() -> showToast("エージェントのコメントが見つかりませんでした", true));
-                    return;
-                }
-
-                // Get latest comment
-                String latestComment = comments.get(comments.size() - 1);
-
-                // Create Pager
-                ArTextPager pager = new ArTextPager(
-                        EvenG1Manager.getInstance(),
-                        new android.os.Handler(android.os.Looper.getMainLooper()),
-                        latestComment);
-
-                // Send first page and show controller
-                runOnUiThread(() -> {
-                    pager.sendCurrentPage(null);
-                    showArControllerDialog(pager);
-                });
-            }
-
-            @Override
-            public void onError(String message) {
-                runOnUiThread(() -> showToast("エラー: " + message, true));
-            }
-        });
-    }
-
-    /**
-     * Asks user if they want to send downloaded file to AR glasses.
-     */
-    private void askSendToAr(String localPath) {
-        new AlertDialog.Builder(this)
-            .setTitle("ダウンロード完了")
-            .setMessage("ARグラスに送信しますか？\n\n" + localPath)
-            .setPositiveButton("送信", (dialog, which) -> {
-                try {
-                    if (!EvenG1Manager.getInstance().isConnected()) {
-                        showToast("ARグラスが接続されていません", true);
-                        return;
-                    }
-
-                    List<String> comments = ClaudeChatParser.getAgentComments(localPath);
-                    if (comments.isEmpty()) {
-                        showToast("エージェントのコメントが見つかりませんでした", true);
-                        return;
-                    }
-
-                    String latestComment = comments.get(comments.size() - 1);
-                    android.util.Log.d("TermuxActivity", "Sending to AR, comment length: " + latestComment.length());
-                    
-                    ArTextPager pager = new ArTextPager(
-                            EvenG1Manager.getInstance(),
-                            new android.os.Handler(android.os.Looper.getMainLooper()),
-                            latestComment);
-                    pager.sendCurrentPage(null);
-                    showArControllerDialog(pager);
-                } catch (Exception e) {
-                    showToast("AR送信エラー: " + e.getMessage(), true);
-                    android.util.Log.e("TermuxActivity", "askSendToAr error", e);
-                }
-            })
-            .setNegativeButton("閉じる", null)
-            .show();
-    }
-
-    /**
-     * Parses and sends local conversation file to AR glasses.
-     */
-    private void parseAndSendLocalToAr(ConversationSyncManager.ConversationFile conversation) {
-        if (!EvenG1Manager.getInstance().isConnected()) {
-            showToast("ARグラスが接続されていません", true);
-            return;
-        }
-
-        showToast("AR用に読み込み中: " + conversation.filename, false);
-
-        // Parse file directly (local file)
-        List<String> comments = ClaudeChatParser.getAgentComments(conversation.path);
-        if (comments.isEmpty()) {
-            showToast("エージェントのコメントが見つかりませんでした", true);
-            return;
-        }
-
-        // Get latest comment
-        String latestComment = comments.get(comments.size() - 1);
-
-        // Create Pager
-        ArTextPager pager = new ArTextPager(
-                EvenG1Manager.getInstance(),
-                new android.os.Handler(android.os.Looper.getMainLooper()),
-                latestComment);
-
-        // Send first page and show controller
-        pager.sendCurrentPage(null);
-        showArControllerDialog(pager);
-    }
 
     private void showArControllerDialog(ArTextPager pager) {
         try {
@@ -2730,14 +2565,23 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                 return;
             }
             
+            // mCurrentArPagerを保持（再オープン可能にするため）
+            mCurrentArPager = pager;
+            
             AlertDialog.Builder builder = new AlertDialog.Builder(this);
             builder.setTitle("AR View (" + pager.getCurrentPageNum() + "/" + pager.getTotalPages() + ")");
-            builder.setMessage("ARグラスに表示中...");
+
+            // Show current page text in message area
+            String currentText = pager.getCurrentPageText();
+            builder.setMessage("現在の表示:\n\n" + currentText);
 
             // Use standard buttons but prevent auto-dismiss
             builder.setPositiveButton("次へ", null);
             builder.setNegativeButton("前へ", null);
-            builder.setNeutralButton("閉じる", (dialog, which) -> dialog.dismiss());
+            builder.setNeutralButton("閉じる", (dialog, which) -> {
+                // 閉じる時もmCurrentArPagerを保持（再オープン可能にするため）
+                dialog.dismiss();
+            });
 
             AlertDialog dialog = builder.create();
             dialog.show();
@@ -2747,6 +2591,8 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                 try {
                     pager.nextPage(null);
                     dialog.setTitle("AR View (" + pager.getCurrentPageNum() + "/" + pager.getTotalPages() + ")");
+                    // Update message with new page text
+                    dialog.setMessage("現在の表示:\n\n" + pager.getCurrentPageText());
                 } catch (Exception e) {
                     showToast("次ページエラー: " + e.getMessage(), true);
                 }
@@ -2756,6 +2602,8 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                 try {
                     pager.prevPage(null);
                     dialog.setTitle("AR View (" + pager.getCurrentPageNum() + "/" + pager.getTotalPages() + ")");
+                    // Update message with new page text
+                    dialog.setMessage("現在の表示:\n\n" + pager.getCurrentPageText());
                 } catch (Exception e) {
                     showToast("前ページエラー: " + e.getMessage(), true);
                 }
@@ -2764,6 +2612,35 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             showToast("ARダイアログエラー: " + e.getMessage(), true);
             android.util.Log.e("TermuxActivity", "showArControllerDialog error", e);
         }
+    }
+    
+    /**
+     * Opens AR View dialog if mCurrentArPager is available.
+     * Can be called from menu or other places to reopen the dialog.
+     */
+    private void openArViewIfAvailable() {
+        if (mCurrentArPager == null) {
+            showToast("AR Viewが利用できません。まずClaude→AR自動同期を使用してください。", true);
+            return;
+        }
+        
+        if (!EvenG1Manager.getInstance().isConnected()) {
+            showToast("ARグラスが接続されていません", true);
+            return;
+        }
+        
+        // Send current page and show dialog
+        mCurrentArPager.sendCurrentPage(new EvenG1Protocol.TextSendCallback() {
+            @Override
+            public void onSuccess() {
+                runOnUiThread(() -> showArControllerDialog(mCurrentArPager));
+            }
+            
+            @Override
+            public void onFailure(@NonNull String error) {
+                runOnUiThread(() -> showToast("送信失敗: " + error, true));
+            }
+        });
     }
 
     /**

@@ -102,4 +102,19 @@ public class ClaudeChatParser {
 
         return comments;
     }
+
+    /**
+     * Gets the latest assistant comment from the JSONL file.
+     * Returns null if no assistant comment is found.
+     *
+     * @param filePath The absolute path to the local .jsonl file.
+     * @return The latest assistant comment text, or null if not found.
+     */
+    public static String getLatestAgentComment(String filePath) {
+        List<String> comments = getAgentComments(filePath);
+        if (comments.isEmpty()) {
+            return null;
+        }
+        return comments.get(comments.size() - 1);
+    }
 }

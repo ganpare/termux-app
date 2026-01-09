@@ -46,6 +46,7 @@ public class AutoArSyncManager {
     private String serverHost;
     private int serverPort;
     private double initialMtime = 0;
+    private String initialLatestComment = null; // 初期の最新assistantメッセージ
     private long watchStartTime = 0;
     private int pollCount = 0;
 
@@ -102,7 +103,7 @@ public class AutoArSyncManager {
 
         executor.execute(() -> {
             try {
-                // Step 1: Get initial timestamp
+                // Step 1: Get initial timestamp and latest assistant comment
                 JSONObject info = fetchLatestInfo();
                 if (info == null) {
                     postError(callback, "サーバーに接続できません");
@@ -112,16 +113,43 @@ public class AutoArSyncManager {
                 
                 initialMtime = info.getDouble("mtime");
                 
-                // Step 2: Send query to terminal
-                mainHandler.post(() -> {
-                    String fullQuery = query + "\n";
-                    byte[] data = fullQuery.getBytes();
-                    session.write(data, 0, data.length);
-                    callback.onWatchStarted();
-                });
+                // Get initial latest assistant comment to compare later
+                ClaudeHistoryHttpClient client = new ClaudeHistoryHttpClient(serverHost, serverPort);
+                client.downloadLatest(new ClaudeHistoryHttpClient.DownloadCallback() {
+                    @Override
+                    public void onSuccess(String localPath) {
+                        initialLatestComment = ClaudeChatParser.getLatestAgentComment(localPath);
+                        android.util.Log.d("AutoArSync", "Initial latest comment: " + 
+                            (initialLatestComment != null ? initialLatestComment.substring(0, Math.min(50, initialLatestComment.length())) + "..." : "null"));
+                        
+                        // Step 2: Send query to terminal
+                        mainHandler.post(() -> {
+                            String fullQuery = query + "\n";
+                            byte[] data = fullQuery.getBytes();
+                            session.write(data, 0, data.length);
+                            callback.onWatchStarted();
+                        });
 
-                // Step 3: Start polling
-                pollForChanges(callback);
+                        // Step 3: Start polling
+                        pollForChanges(callback);
+                    }
+
+                    @Override
+                    public void onError(String message) {
+                        // Even if we can't get initial comment, start polling anyway
+                        android.util.Log.w("AutoArSync", "Failed to get initial comment: " + message);
+                        initialLatestComment = null;
+                        
+                        mainHandler.post(() -> {
+                            String fullQuery = query + "\n";
+                            byte[] data = fullQuery.getBytes();
+                            session.write(data, 0, data.length);
+                            callback.onWatchStarted();
+                        });
+
+                        pollForChanges(callback);
+                    }
+                });
 
             } catch (Exception e) {
                 postError(callback, "エラー: " + e.getMessage());
@@ -172,12 +200,8 @@ public class AutoArSyncManager {
                 double currentMtime = info.getDouble("mtime");
                 
                 if (currentMtime > initialMtime) {
-                    // File changed!
-                    isWatching.set(false);
-                    mainHandler.post(callback::onFileChanged);
-                    
-                    // Download and display
-                    downloadAndDisplay(callback);
+                    // File changed! Check if assistant message actually changed
+                    checkAndDisplayIfNew(callback);
                 } else {
                     // No change, continue polling
                     scheduleNextPoll(callback);
@@ -225,6 +249,67 @@ public class AutoArSyncManager {
             pageNum,
             maxPolls
         );
+    }
+
+    /**
+     * Check if assistant message has changed, and display if it has.
+     */
+    private void checkAndDisplayIfNew(SyncCallback callback) {
+        executor.execute(() -> {
+            try {
+                // Download latest file
+                ClaudeHistoryHttpClient client = new ClaudeHistoryHttpClient(serverHost, serverPort);
+                client.downloadLatest(new ClaudeHistoryHttpClient.DownloadCallback() {
+                    @Override
+                    public void onSuccess(String localPath) {
+                        // Get latest assistant comment
+                        String currentLatestComment = ClaudeChatParser.getLatestAgentComment(localPath);
+                        
+                        if (currentLatestComment == null) {
+                            // No assistant comment found, continue polling
+                            android.util.Log.d("AutoArSync", "No assistant comment found, continuing to poll");
+                            scheduleNextPoll(callback);
+                            return;
+                        }
+                        
+                        // Compare with initial comment
+                        if (initialLatestComment == null || !currentLatestComment.equals(initialLatestComment)) {
+                            // Assistant message has changed!
+                            android.util.Log.d("AutoArSync", "Assistant message changed! Displaying...");
+                            isWatching.set(false);
+                            mainHandler.post(callback::onFileChanged);
+                            
+                            // Display on AR
+                            displayOnAr(currentLatestComment, callback);
+                        } else {
+                            // Assistant message hasn't changed (probably just user message added)
+                            android.util.Log.d("AutoArSync", "Assistant message unchanged, continuing to poll");
+                            // Update initialMtime to avoid re-checking the same change
+                            try {
+                                JSONObject info = fetchLatestInfo();
+                                if (info != null) {
+                                    initialMtime = info.getDouble("mtime");
+                                }
+                            } catch (Exception e) {
+                                // Ignore
+                            }
+                            scheduleNextPoll(callback);
+                        }
+                    }
+
+                    @Override
+                    public void onError(String message) {
+                        // Continue polling on download error
+                        android.util.Log.w("AutoArSync", "Download error: " + message);
+                        scheduleNextPoll(callback);
+                    }
+                });
+            } catch (Exception e) {
+                // Continue polling on error
+                android.util.Log.w("AutoArSync", "Error checking for new message: " + e.getMessage());
+                scheduleNextPoll(callback);
+            }
+        });
     }
 
     private void downloadAndDisplay(SyncCallback callback) {
