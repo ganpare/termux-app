@@ -32,12 +32,20 @@ public class ClaudeChatParser {
         File file = new File(filePath);
 
         if (!file.exists()) {
+            android.util.Log.e("ClaudeChatParser", "File not found: " + filePath);
             return comments;
         }
+
+        android.util.Log.d("ClaudeChatParser", "Parsing file: " + filePath + " (size: " + file.length() + " bytes)");
+
+        int totalLines = 0;
+        int assistantLines = 0;
+        int textBlocks = 0;
 
         try (BufferedReader br = new BufferedReader(new FileReader(file))) {
             String line;
             while ((line = br.readLine()) != null) {
+                totalLines++;
                 if (line.trim().isEmpty()) {
                     continue;
                 }
@@ -50,12 +58,16 @@ public class ClaudeChatParser {
                         continue;
                     }
 
+                    assistantLines++;
+
                     if (!event.has("message")) {
+                        android.util.Log.d("ClaudeChatParser", "Assistant event missing 'message' field");
                         continue;
                     }
 
                     JSONObject message = event.getJSONObject("message");
                     if (!message.has("content")) {
+                        android.util.Log.d("ClaudeChatParser", "Message missing 'content' field");
                         continue;
                     }
 
@@ -65,20 +77,28 @@ public class ClaudeChatParser {
 
                         // Extract only text content, ignoring tool_use
                         if (contentItem.has("type") && contentItem.getString("type").equals("text")) {
+                            textBlocks++;
                             if (contentItem.has("text")) {
-                                comments.add(contentItem.getString("text"));
+                                String text = contentItem.getString("text");
+                                comments.add(text);
+                                android.util.Log.d("ClaudeChatParser", "Found text block #" + textBlocks + " (length: " + text.length() + ")");
                             }
                         }
                     }
 
                 } catch (JSONException e) {
                     // Skip malformed lines
+                    android.util.Log.w("ClaudeChatParser", "Malformed JSON line " + totalLines + ": " + e.getMessage());
                     continue;
                 }
             }
         } catch (IOException e) {
+            android.util.Log.e("ClaudeChatParser", "IO Error: " + e.getMessage());
             e.printStackTrace();
         }
+
+        android.util.Log.i("ClaudeChatParser", "Parsing complete: " + totalLines + " total lines, " +
+            assistantLines + " assistant lines, " + textBlocks + " text blocks, " + comments.size() + " comments");
 
         return comments;
     }

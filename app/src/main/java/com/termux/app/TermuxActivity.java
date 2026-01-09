@@ -49,6 +49,10 @@ import com.termux.app.ssh.SshConnectionConfig;
 import com.termux.app.activities.SshConnectionsActivity;
 import com.termux.app.dirnav.DirectoryNavigationManager;
 import com.termux.app.claude.ConversationSyncManager;
+import com.termux.app.claude.ClaudeHistoryHttpClient;
+
+import android.os.Handler;
+import android.os.Looper;
 import com.termux.app.eveng1.EvenG1ConfigManager;
 import com.termux.app.eveng1.EvenG1Manager;
 import com.termux.app.eveng1.EvenG1DevicePair;
@@ -2158,30 +2162,266 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         ConversationSyncManager syncManager = new ConversationSyncManager();
 
         claudeButton.setOnClickListener(v -> {
-            TerminalSession session = getCurrentSession();
-            if (session == null) {
-                showToast("アクティブなセッションがありません", true);
-                return;
+            // Show source selection dialog
+            new AlertDialog.Builder(this)
+                    .setTitle("Claude 会話履歴の取得元")
+                    .setItems(new String[] {
+                        "📱 ローカル (.claude/projects/)",
+                        "🌐 HTTP (サーバー経由)",
+                        "📟 リモート (ターミナル経由)"
+                    }, (dialog, which) -> {
+                        if (which == 0) {
+                            // Local filesystem
+                            showToast("ローカルファイルを検索中...", false);
+                            syncManager.listLocalConversations(1, new ConversationSyncManager.ConversationListCallback() {
+                                @Override
+                                public void onConversationsFound(List<ConversationSyncManager.ConversationFile> conversations) {
+                                    showLocalConversationListDialog(conversations);
+                                }
+
+                                @Override
+                                public void onError(String message) {
+                                    showToast(message, true);
+                                }
+                            });
+                        } else if (which == 1) {
+                            // HTTP server
+                            showHttpServerDialog(syncManager);
+                        } else {
+                            // Remote via SSH - show sub-options
+                            TerminalSession session = getCurrentSession();
+                            if (session == null) {
+                                showToast("アクティブなセッションがありません", true);
+                                return;
+                            }
+
+                            new AlertDialog.Builder(TermuxActivity.this)
+                                .setTitle("リモート取得方法")
+                                .setItems(new String[] {
+                                    "🚀 最新ファイルを直接取得",
+                                    "📋 ファイル一覧から選択"
+                                }, (subDialog, subWhich) -> {
+                                    if (subWhich == 0) {
+                                        // Direct download latest
+                                        showToast("最新ファイルをダウンロード中...", false);
+                                        syncManager.downloadLatestFile(session, new ConversationSyncManager.FileDownloadCallback() {
+                                            @Override
+                                            public void onDownloadComplete(String localPath) {
+                                                runOnUiThread(() -> {
+                                                    showToast("ダウンロード完了: " + localPath, false);
+                                                    // Optionally send to AR
+                                                    askSendToAr(localPath);
+                                                });
+                                            }
+
+                                            @Override
+                                            public void onError(String message) {
+                                                runOnUiThread(() -> showToast("エラー: " + message, true));
+                                            }
+                                        });
+                                    } else {
+                                        // List files first
+                                        showToast("リモートから会話履歴を取得中...", false);
+                                        syncManager.listConversations(session, 1, new ConversationSyncManager.ConversationListCallback() {
+                                            @Override
+                                            public void onConversationsFound(List<ConversationSyncManager.ConversationFile> conversations) {
+                                                showConversationListDialog(conversations, syncManager);
+                                            }
+
+                                            @Override
+                                            public void onError(String message) {
+                                                showToast(message, true);
+                                            }
+                                        });
+                                    }
+                                })
+                                .setNegativeButton("キャンセル", null)
+                                .show();
+                        }
+                    })
+                    .setNegativeButton("キャンセル", null)
+                    .show();
+        });
+    }
+
+    // Claude history server settings
+    private static final String CLAUDE_SERVER_SESSION = "claude-history-server";
+    private static final int CLAUDE_SERVER_PORT = 8765;
+    private String mLastServerHost = ""; // Remember last used host
+    
+    /**
+     * Shows dialog to connect to HTTP server.
+     */
+    private void showHttpServerDialog(ConversationSyncManager syncManager) {
+        // Ask for server address
+        android.widget.EditText input = new android.widget.EditText(this);
+        input.setHint("例: 192.168.1.100");
+        if (!mLastServerHost.isEmpty()) {
+            input.setText(mLastServerHost);
+        }
+        
+        new AlertDialog.Builder(this)
+            .setTitle("HTTPサーバーに接続")
+            .setMessage("サーバーのIPアドレスを入力:\n(ポート: " + CLAUDE_SERVER_PORT + ")")
+            .setView(input)
+            .setPositiveButton("接続", (dialog, which) -> {
+                String host = input.getText().toString().trim();
+                if (host.isEmpty()) {
+                    showToast("アドレスを入力してください", true);
+                    return;
+                }
+                mLastServerHost = host;
+                connectToClaudeServer(host);
+            })
+            .setNegativeButton("キャンセル", null)
+            .show();
+    }
+    
+    /**
+     * Connect to Claude history server.
+     */
+    private void connectToClaudeServer(String host) {
+        showToast("サーバーに接続中...", false);
+        
+        ClaudeHistoryHttpClient client = new ClaudeHistoryHttpClient(host, CLAUDE_SERVER_PORT);
+        client.checkHealth(new ClaudeHistoryHttpClient.HealthCallback() {
+            @Override
+            public void onSuccess(String cwd) {
+                showToast("接続成功!", false);
+                showHttpServerOptionsDialog(client, cwd);
             }
-
-            showToast("会話履歴を取得中...", false);
-
-            syncManager.listConversations(session, 1, new ConversationSyncManager.ConversationListCallback() {
-                @Override
-                public void onConversationsFound(List<ConversationSyncManager.ConversationFile> conversations) {
-                    showConversationListDialog(conversations, syncManager);
+            
+            @Override
+            public void onError(String message) {
+                showToast("接続エラー: " + message, true);
+            }
+        });
+    }
+    
+    /**
+     * Connect to HTTP server and show options.
+     */
+    private void connectToHttpServer(String host, int port) {
+        showToast("サーバーに接続中...", false);
+        
+        ClaudeHistoryHttpClient client = new ClaudeHistoryHttpClient(host, port);
+        client.checkHealth(new ClaudeHistoryHttpClient.HealthCallback() {
+            @Override
+            public void onSuccess(String cwd) {
+                showHttpServerOptionsDialog(client, cwd);
+            }
+            
+            @Override
+            public void onError(String message) {
+                showToast("接続エラー: " + message, true);
+            }
+        });
+    }
+    
+    /**
+     * Show options after connecting to HTTP server.
+     */
+    private void showHttpServerOptionsDialog(ClaudeHistoryHttpClient client, String serverCwd) {
+        new AlertDialog.Builder(this)
+            .setTitle("HTTP接続成功\n" + serverCwd)
+            .setItems(new String[] {
+                "🚀 最新ファイルをダウンロード",
+                "📋 ファイル一覧を表示"
+            }, (dialog, which) -> {
+                if (which == 0) {
+                    downloadLatestViaHttp(client);
+                } else {
+                    listFilesViaHttp(client);
                 }
-
-                @Override
-                public void onError(String message) {
-                    showToast(message, true);
+            })
+            .setNegativeButton("キャンセル", null)
+            .show();
+    }
+    
+    /**
+     * Download latest file via HTTP.
+     */
+    private void downloadLatestViaHttp(ClaudeHistoryHttpClient client) {
+        showToast("最新ファイルをダウンロード中...", false);
+        
+        client.downloadLatest(new ClaudeHistoryHttpClient.DownloadCallback() {
+            @Override
+            public void onSuccess(String localPath) {
+                showToast("ダウンロード完了!", false);
+                askSendToAr(localPath);
+            }
+            
+            @Override
+            public void onError(String message) {
+                showToast("エラー: " + message, true);
+            }
+        });
+    }
+    
+    /**
+     * List files via HTTP and show selection dialog.
+     */
+    private void listFilesViaHttp(ClaudeHistoryHttpClient client) {
+        showToast("ファイル一覧を取得中...", false);
+        
+        client.listCurrentFiles(new ClaudeHistoryHttpClient.FileListCallback() {
+            @Override
+            public void onSuccess(String cwd, String project, List<ClaudeHistoryHttpClient.RemoteFile> files) {
+                if (files.isEmpty()) {
+                    showToast("ファイルが見つかりません", true);
+                    return;
                 }
-            });
+                showHttpFileListDialog(client, files);
+            }
+            
+            @Override
+            public void onError(String message) {
+                showToast("エラー: " + message, true);
+            }
+        });
+    }
+    
+    /**
+     * Show file list dialog for HTTP downloads.
+     */
+    private void showHttpFileListDialog(ClaudeHistoryHttpClient client, List<ClaudeHistoryHttpClient.RemoteFile> files) {
+        String[] fileNames = new String[files.size()];
+        for (int i = 0; i < files.size(); i++) {
+            fileNames[i] = "💬 " + files.get(i).displayName;
+        }
+        
+        new AlertDialog.Builder(this)
+            .setTitle("会話ファイル (" + files.size() + "件)")
+            .setItems(fileNames, (dialog, which) -> {
+                ClaudeHistoryHttpClient.RemoteFile selected = files.get(which);
+                downloadFileViaHttp(client, selected);
+            })
+            .setNegativeButton("キャンセル", null)
+            .show();
+    }
+    
+    /**
+     * Download specific file via HTTP.
+     */
+    private void downloadFileViaHttp(ClaudeHistoryHttpClient client, ClaudeHistoryHttpClient.RemoteFile file) {
+        showToast("ダウンロード中: " + file.name, false);
+        
+        client.downloadFile(file, new ClaudeHistoryHttpClient.DownloadCallback() {
+            @Override
+            public void onSuccess(String localPath) {
+                showToast("ダウンロード完了!", false);
+                askSendToAr(localPath);
+            }
+            
+            @Override
+            public void onError(String message) {
+                showToast("エラー: " + message, true);
+            }
         });
     }
 
     /**
-     * Shows a dialog with the list of conversation files.
+     * Shows a dialog with the list of conversation files (remote).
      * User can select a file to download.
      */
     private void showConversationListDialog(List<ConversationSyncManager.ConversationFile> conversations,
@@ -2214,7 +2454,35 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     }
 
     /**
-     * Downloads and sends the conversation to AR glasses.
+     * Shows a dialog with the list of local conversation files.
+     * User can select a file to send to AR glasses.
+     */
+    private void showLocalConversationListDialog(List<ConversationSyncManager.ConversationFile> conversations) {
+        // Format conversation names with icons
+        String[] convNames = new String[conversations.size()];
+        for (int i = 0; i < conversations.size(); i++) {
+            convNames[i] = "💬 " + conversations.get(i).displayName;
+        }
+
+        new AlertDialog.Builder(this)
+                .setTitle("ローカルClaude履歴 (" + conversations.size() + ")")
+                .setItems(convNames, (dialog, which) -> {
+                    ConversationSyncManager.ConversationFile selected = conversations.get(which);
+
+                    // Show action options
+                    new AlertDialog.Builder(TermuxActivity.this)
+                            .setTitle(selected.filename)
+                            .setItems(new String[] { "ARグラスに送信" }, (subDialog, subWhich) -> {
+                                parseAndSendLocalToAr(selected);
+                            })
+                            .show();
+                })
+                .setNegativeButton("キャンセル", null)
+                .show();
+    }
+
+    /**
+     * Downloads and sends the conversation to AR glasses (remote).
      */
     private void parseAndSendToAr(ConversationSyncManager.ConversationFile conversation,
             ConversationSyncManager syncManager) {
@@ -2262,6 +2530,69 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                 runOnUiThread(() -> showToast("エラー: " + message, true));
             }
         });
+    }
+
+    /**
+     * Asks user if they want to send downloaded file to AR glasses.
+     */
+    private void askSendToAr(String localPath) {
+        new AlertDialog.Builder(this)
+            .setTitle("ダウンロード完了")
+            .setMessage("ARグラスに送信しますか？\n\n" + localPath)
+            .setPositiveButton("送信", (dialog, which) -> {
+                if (!EvenG1Manager.getInstance().isConnected()) {
+                    showToast("ARグラスが接続されていません", true);
+                    return;
+                }
+
+                List<String> comments = ClaudeChatParser.getAgentComments(localPath);
+                if (comments.isEmpty()) {
+                    showToast("エージェントのコメントが見つかりませんでした", true);
+                    return;
+                }
+
+                String latestComment = comments.get(comments.size() - 1);
+                ArTextPager pager = new ArTextPager(
+                        EvenG1Manager.getInstance(),
+                        new android.os.Handler(android.os.Looper.getMainLooper()),
+                        latestComment);
+                pager.sendCurrentPage(null);
+                showArControllerDialog(pager);
+            })
+            .setNegativeButton("閉じる", null)
+            .show();
+    }
+
+    /**
+     * Parses and sends local conversation file to AR glasses.
+     */
+    private void parseAndSendLocalToAr(ConversationSyncManager.ConversationFile conversation) {
+        if (!EvenG1Manager.getInstance().isConnected()) {
+            showToast("ARグラスが接続されていません", true);
+            return;
+        }
+
+        showToast("AR用に読み込み中: " + conversation.filename, false);
+
+        // Parse file directly (local file)
+        List<String> comments = ClaudeChatParser.getAgentComments(conversation.path);
+        if (comments.isEmpty()) {
+            showToast("エージェントのコメントが見つかりませんでした", true);
+            return;
+        }
+
+        // Get latest comment
+        String latestComment = comments.get(comments.size() - 1);
+
+        // Create Pager
+        ArTextPager pager = new ArTextPager(
+                EvenG1Manager.getInstance(),
+                new android.os.Handler(android.os.Looper.getMainLooper()),
+                latestComment);
+
+        // Send first page and show controller
+        pager.sendCurrentPage(null);
+        showArControllerDialog(pager);
     }
 
     private void showArControllerDialog(ArTextPager pager) {
