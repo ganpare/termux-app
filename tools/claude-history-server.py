@@ -82,6 +82,10 @@ class ClaudeHistoryHandler(BaseHTTPRequestHandler):
             filepath = path.split("file=")[1]
             self.handle_download(filepath)
         
+        # GET /api/latest-info - Get latest file metadata only (for polling)
+        elif path == "/api/latest-info":
+            self.handle_latest_info()
+        
         # GET /api/latest - Get latest conversation file from current project
         elif path == "/api/latest":
             self.handle_latest()
@@ -157,6 +161,37 @@ class ClaudeHistoryHandler(BaseHTTPRequestHandler):
                 "cwd": cwd,
                 "project": project_name,
                 "files": files
+            })
+        except Exception as e:
+            self.send_json({"error": str(e)}, 500)
+    
+    def handle_latest_info(self):
+        """Get metadata of the latest conversation file (for efficient polling)."""
+        try:
+            cwd = os.getcwd()
+            project_name = get_project_dir_name(cwd)
+            project_path = os.path.join(CLAUDE_PROJECTS_DIR, project_name)
+            
+            if not os.path.exists(project_path):
+                self.send_json({
+                    "error": f"Project not found for cwd",
+                    "cwd": cwd,
+                    "expected_project": project_name
+                }, 404)
+                return
+            
+            files = self._get_jsonl_files(project_path)
+            if not files:
+                self.send_json({"error": "No conversation files found"}, 404)
+                return
+            
+            # Return only metadata of latest file
+            latest = files[0]
+            self.send_json({
+                "path": latest["path"],
+                "name": latest["name"],
+                "mtime": latest["mtime"],
+                "size": latest["size"]
             })
         except Exception as e:
             self.send_json({"error": str(e)}, 500)

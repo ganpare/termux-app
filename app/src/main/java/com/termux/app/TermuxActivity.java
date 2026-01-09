@@ -50,6 +50,7 @@ import com.termux.app.activities.SshConnectionsActivity;
 import com.termux.app.dirnav.DirectoryNavigationManager;
 import com.termux.app.claude.ConversationSyncManager;
 import com.termux.app.claude.ClaudeHistoryHttpClient;
+import com.termux.app.claude.AutoArSyncManager;
 
 import android.os.Handler;
 import android.os.Looper;
@@ -2167,12 +2168,20 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         claudeButton.setOnClickListener(v -> {
             // Show source selection dialog
             new AlertDialog.Builder(this)
-                    .setTitle("Claude 会話履歴の取得元")
+                    .setTitle("Claude 会話履歴")
                     .setItems(new String[] {
+                        "🤖 Claude→AR (自動同期)",
                         "📱 ローカル (.claude/projects/)",
                         "🌐 HTTP (サーバー経由)",
                         "📟 リモート (ターミナル経由)"
                     }, (dialog, which) -> {
+                        if (which == 0) {
+                            // Auto AR sync
+                            showAutoArSyncDialog();
+                            return;
+                        }
+                        // Shift index for other options
+                        which = which - 1;
                         if (which == 0) {
                             // Local filesystem
                             showToast("ローカルファイルを検索中...", false);
@@ -2251,6 +2260,131 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     private static final int CLAUDE_SERVER_PORT = 8765;
     private String mCurrentSshHost = ""; // SSH host for HTTP server connection
     
+    // AutoArSyncManager instance
+    private AutoArSyncManager mAutoArSyncManager;
+    
+    /**
+     * Shows dialog for automatic AR sync.
+     * User inputs query, app sends to terminal and watches for file changes.
+     */
+    private void showAutoArSyncDialog() {
+        if (mCurrentSshHost == null || mCurrentSshHost.isEmpty()) {
+            showToast("SSH接続が必要です", true);
+            return;
+        }
+        
+        TerminalSession session = getCurrentSession();
+        if (session == null) {
+            showToast("アクティブなセッションがありません", true);
+            return;
+        }
+        
+        if (!EvenG1Manager.getInstance().isConnected()) {
+            showToast("ARグラスが接続されていません", true);
+            return;
+        }
+        
+        // Check if already watching
+        if (mAutoArSyncManager != null && mAutoArSyncManager.isWatching()) {
+            new AlertDialog.Builder(this)
+                .setTitle("監視中")
+                .setMessage("現在ファイル変更を監視中です。\n停止しますか？")
+                .setPositiveButton("停止", (d, w) -> {
+                    mAutoArSyncManager.stopWatching();
+                    showToast("監視を停止しました", false);
+                })
+                .setNegativeButton("継続", null)
+                .show();
+            return;
+        }
+        
+        // Create input dialog
+        android.widget.EditText input = new android.widget.EditText(this);
+        input.setHint("Claudeに送るクエリを入力...");
+        input.setMinLines(3);
+        input.setGravity(android.view.Gravity.TOP);
+        
+        // Add padding
+        int padding = (int) (16 * getResources().getDisplayMetrics().density);
+        android.widget.FrameLayout container = new android.widget.FrameLayout(this);
+        android.widget.FrameLayout.LayoutParams params = new android.widget.FrameLayout.LayoutParams(
+            android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+            android.widget.FrameLayout.LayoutParams.WRAP_CONTENT
+        );
+        params.setMargins(padding, padding/2, padding, 0);
+        input.setLayoutParams(params);
+        container.addView(input);
+        
+        new AlertDialog.Builder(this)
+            .setTitle("🤖 Claude→AR 自動同期")
+            .setMessage("クエリを送信後、Claudeの応答を自動でARに表示します\n(最大10分間監視)")
+            .setView(container)
+            .setPositiveButton("送信→AR", (dialog, which) -> {
+                String query = input.getText().toString().trim();
+                if (query.isEmpty()) {
+                    showToast("クエリを入力してください", true);
+                    return;
+                }
+                startAutoArSync(session, query);
+            })
+            .setNegativeButton("キャンセル", null)
+            .show();
+    }
+    
+    /**
+     * Starts automatic AR sync process.
+     */
+    private void startAutoArSync(TerminalSession session, String query) {
+        mAutoArSyncManager = new AutoArSyncManager(mCurrentSshHost, CLAUDE_SERVER_PORT);
+        
+        mAutoArSyncManager.startWatching(session, query, new AutoArSyncManager.SyncCallback() {
+            @Override
+            public void onWatchStarted() {
+                showToast("クエリ送信、監視開始...", false);
+            }
+            
+            @Override
+            public void onPolling(int count, int remainingSeconds) {
+                // Update status (optional: could show in a persistent notification)
+                android.util.Log.d("AutoArSync", "Polling #" + count + ", remaining: " + remainingSeconds + "s");
+            }
+            
+            @Override
+            public void onFileChanged() {
+                showToast("ファイル更新検出！ダウンロード中...", false);
+            }
+            
+            @Override
+            public void onSyncComplete(String content) {
+                showToast("AR表示完了！", false);
+                // Show pager dialog for navigation
+                showAutoArPagerDialog(content);
+            }
+            
+            @Override
+            public void onTimeout() {
+                showToast("タイムアウト（10分経過）", true);
+            }
+            
+            @Override
+            public void onError(String message) {
+                showToast("エラー: " + message, true);
+            }
+        });
+    }
+    
+    /**
+     * Shows AR pager dialog after auto sync completes.
+     */
+    private void showAutoArPagerDialog(String content) {
+        ArTextPager pager = new ArTextPager(
+            EvenG1Manager.getInstance(),
+            new Handler(Looper.getMainLooper()),
+            content
+        );
+        showArControllerDialog(pager);
+    }
+
     /**
      * Shows dialog to connect to HTTP server.
      * Uses SSH host automatically if available.
