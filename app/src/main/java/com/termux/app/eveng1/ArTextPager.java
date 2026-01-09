@@ -57,11 +57,20 @@ public class ArTextPager {
         int pageNum = currentPageIndex + 1;
         int maxPage = pages.size();
 
+        // Use empty callback if null to avoid NullPointerException
+        EvenG1Protocol.TextSendCallback safeCallback = callback != null ? callback : 
+            new EvenG1Protocol.TextSendCallback() {
+                @Override
+                public void onSuccess() {}
+                @Override
+                public void onFailure(String error) {}
+            };
+
         EvenG1Protocol.sendText(
                 manager,
                 pageText,
                 handler,
-                callback,
+                safeCallback,
                 EvenG1Constants.NEW_TEXT_SCREEN,
                 pageNum,
                 maxPage);
