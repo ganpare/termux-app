@@ -284,9 +284,38 @@ Bootstrap zips are automatically downloaded during build via `downloadBootstrap(
 
 **Cleanup:** Bootstraps are deleted on `./gradlew clean`
 
+## HTTP File Transfer (SSH Server → Android → AR Glasses)
+
+### Overview
+SSH接続先サーバーからHTTP経由でファイルを取得し、ARグラスに表示するパイプライン。
+詳細は `docs/HTTP_FILE_TRANSFER.md` を参照。
+
+### Quick Start
+```bash
+# サーバー側: HTTPサーバー起動
+cd ~/your-project
+python3 ~/.local/bin/claude-history-server.py
+
+# アプリ側: SSH接続 → Claudeボタン → HTTP → ダウンロード → AR送信
+```
+
+### Key Components
+- **Server**: `tools/claude-history-server.py` - Python HTTP API server
+- **Client**: `ClaudeHistoryHttpClient.java` - Android HTTP client
+- **Parser**: `ClaudeChatParser.java` - JSONL history parser
+- **Display**: `ArTextPager.java` - AR glasses text pagination
+
+### Architecture Pattern
+```
+SSH Host → HTTP Server (port 8765) → Android Client → Local Storage → AR Glasses
+```
+
+このパターンは他のファイル転送にも応用可能。ターミナルスクレイピングの制限（バッファサイズ等）を回避できる。
+
 ## Useful Documentation References
 
 - [Termux Wiki](https://wiki.termux.com/wiki/)
 - [Terminal Emulator Implementation Guide](https://invisible-island.net/xterm/ctlseqs/ctlseqs.html)
 - UI terminology: `UI_TERMINOLOGY.md`
 - Custom commands spec: `CUSTOM_COMMANDS.md`
+- HTTP file transfer: `docs/HTTP_FILE_TRANSFER.md`
