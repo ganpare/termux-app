@@ -1833,7 +1833,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         input.setText("Hello from Termux!");
 
         new AlertDialog.Builder(this)
-                .setTitle("Send Text to EVEN G1")
+                .setTitle("Send Text to EVEN G1 (5秒表示)")
                 .setView(input)
                 .setPositiveButton("Send", (dialog, which) -> {
                     String text = input.getText().toString();
@@ -1845,7 +1845,13 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                                 new com.termux.app.eveng1.EvenG1Protocol.TextSendCallback() {
                                     @Override
                                     public void onSuccess() {
-                                        runOnUiThread(() -> showToast("Text sent successfully!", false));
+                                        runOnUiThread(() -> showToast("Text sent! (5秒後に消えます)", false));
+                                        
+                                        // Exit to dashboard after 5 seconds
+                                        handler.postDelayed(() -> {
+                                            byte[] exitPacket = com.termux.app.eveng1.EvenG1Protocol.createExitToDashboardPacket();
+                                            manager.sendData(exitPacket);
+                                        }, 5000);
                                     }
 
                                     @Override
