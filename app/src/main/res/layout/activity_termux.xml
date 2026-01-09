@@ -185,23 +185,11 @@
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/evenG1ConnectButton"
-                android:layout_width="0dp"
-                android:layout_weight="1"
+                android:layout_width="match_parent"
                 android:layout_height="48dp"
                 android:text="G1接続"
                 android:textSize="14sp"
-                android:backgroundTint="#E91E63"
-                android:layout_marginEnd="4dp" />
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/evenG1ManageButton"
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="48dp"
-                android:text="G1設定"
-                android:textSize="14sp"
-                android:backgroundTint="#9E9E9E"
-                android:layout_marginStart="4dp" />
+                android:backgroundTint="#E91E63" />
 
         </LinearLayout>
 

@@ -50,10 +50,11 @@ import com.termux.app.activities.SshConnectionsActivity;
 import com.termux.app.dirnav.DirectoryNavigationManager;
 import com.termux.app.claude.ConversationSyncManager;
 import com.termux.app.eveng1.EvenG1ConfigManager;
-import com.termux.app.eveng1.EvenG1ConnectionConfig;
 import com.termux.app.eveng1.EvenG1Manager;
 import com.termux.app.eveng1.EvenG1DevicePair;
-import com.termux.app.activities.EvenG1ConnectionsActivity;
+import com.termux.app.eveng1.ArTextPager;
+import com.termux.app.eveng1.EvenG1Protocol;
+import com.termux.app.claude.ClaudeChatParser;
 import com.termux.app.terminal.TermuxActivityRootView;
 import com.termux.app.terminal.TermuxTerminalSessionActivityClient;
 import com.termux.app.terminal.io.TermuxTerminalExtraKeys;
@@ -1611,7 +1612,8 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                 // Initialize manager if needed
                 g1Manager.initialize(getApplicationContext(), new EvenG1Manager.ConnectionCallback() {
                     @Override
-                    public void onDeviceFound(@NonNull String channelNumber, @NonNull String leftName, @NonNull String rightName) {
+                    public void onDeviceFound(@NonNull String channelNumber, @NonNull String leftName,
+                            @NonNull String rightName) {
                         runOnUiThread(() -> {
                             showToast("Found G1 Channel " + channelNumber, false);
                         });
@@ -1644,7 +1646,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                     public void onDataReceived(boolean isLeft, @NonNull byte[] data) {
                         // Handle received data from glasses (for future implementation)
                         Logger.logDebug("TermuxActivity", "Received data from " +
-                            (isLeft ? "left" : "right") + ": " + data.length + " bytes");
+                                (isLeft ? "left" : "right") + ": " + data.length + " bytes");
                     }
                 });
 
@@ -1653,14 +1655,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             });
         }
 
-        // G1 Manage button - opens G1 connections management activity
-        View g1ManageButton = findViewById(R.id.evenG1ManageButton);
-        if (g1ManageButton != null) {
-            g1ManageButton.setOnClickListener(v -> {
-                Intent intent = new Intent(this, EvenG1ConnectionsActivity.class);
-                startActivity(intent);
-            });
-        }
+        // G1 Manage button removed - functionality integrated into G1 Connect dialog
     }
 
     /**
@@ -1669,11 +1664,15 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     private boolean checkBluetoothPermissions() {
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
             // Android 12+ (API 31+)
-            return checkSelfPermission(android.Manifest.permission.BLUETOOTH_SCAN) == android.content.pm.PackageManager.PERMISSION_GRANTED &&
-                   checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) == android.content.pm.PackageManager.PERMISSION_GRANTED;
+            return checkSelfPermission(
+                    android.Manifest.permission.BLUETOOTH_SCAN) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                    &&
+                    checkSelfPermission(
+                            android.Manifest.permission.BLUETOOTH_CONNECT) == android.content.pm.PackageManager.PERMISSION_GRANTED;
         } else {
             // Android 11 and below
-            return checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED;
+            return checkSelfPermission(
+                    android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED;
         }
     }
 
@@ -1683,14 +1682,14 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     private void requestBluetoothPermissions() {
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
             // Android 12+ (API 31+)
-            requestPermissions(new String[]{
-                android.Manifest.permission.BLUETOOTH_SCAN,
-                android.Manifest.permission.BLUETOOTH_CONNECT
+            requestPermissions(new String[] {
+                    android.Manifest.permission.BLUETOOTH_SCAN,
+                    android.Manifest.permission.BLUETOOTH_CONNECT
             }, 1001);
         } else {
             // Android 11 and below
-            requestPermissions(new String[]{
-                android.Manifest.permission.ACCESS_FINE_LOCATION
+            requestPermissions(new String[] {
+                    android.Manifest.permission.ACCESS_FINE_LOCATION
             }, 1001);
         }
     }
@@ -1699,64 +1698,130 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
      * Show G1 connection dialog.
      */
     private void showG1ConnectionDialog(com.termux.app.eveng1.EvenG1ConfigManager configManager,
-                                       com.termux.app.eveng1.EvenG1Manager g1Manager) {
-        List<com.termux.app.eveng1.EvenG1ConnectionConfig> configs = configManager.loadConfigs();
-
+            com.termux.app.eveng1.EvenG1Manager g1Manager) {
+        
+        // Check current connection status
+        boolean isConnected = g1Manager.isConnected();
+        com.termux.app.eveng1.EvenG1ConfigManager.SavedG1Device savedDevice = configManager.getSavedDevice();
+        
         // Create dialog options
         List<String> options = new ArrayList<>();
-        options.add("Scan for new devices");
-        for (com.termux.app.eveng1.EvenG1ConnectionConfig config : configs) {
-            options.add(config.toString());
+        
+        if (isConnected) {
+            // Connected state options
+            options.add("📤 Send Text to G1");
+            options.add("💾 Save this G1 for quick connect");
+            options.add("🔌 Disconnect");
+            options.add("🔄 Reconnect (disconnect & scan)");
+        } else {
+            // Disconnected state options
+            if (savedDevice != null) {
+                options.add("📱 Connect to " + savedDevice.toString());
+            }
+            options.add("🔍 Scan for new devices");
+            if (savedDevice != null) {
+                options.add("🗑️ Clear saved device");
+            }
         }
 
+        String title = isConnected ? "EVEN G1 (Connected ✓)" : "EVEN G1 Connection";
+        
         new AlertDialog.Builder(this)
-            .setTitle("EVEN G1 Connection")
-            .setItems(options.toArray(new String[0]), (dialog, which) -> {
-                if (which == 0) {
-                    // Scan for new devices
-                    showToast("Scanning for EVEN G1 devices...", false);
-                    g1Manager.startScan();
-
-                    // Show scanning dialog with discovered devices
-                    new android.os.Handler().postDelayed(() -> {
-                        List<com.termux.app.eveng1.EvenG1Device> devices = g1Manager.getDiscoveredDevices();
-                        List<String> channels = new ArrayList<>();
-                        for (com.termux.app.eveng1.EvenG1Device device : devices) {
-                            String channel = device.getChannelNumber();
-                            if (!channels.contains(channel)) {
-                                channels.add(channel);
+                .setTitle(title)
+                .setItems(options.toArray(new String[0]), (dialog, which) -> {
+                    if (isConnected) {
+                        // Connected state options
+                        switch (which) {
+                            case 0: // Send text
+                                showG1TestSendDialog();
+                                break;
+                            case 1: // Save current device
+                                com.termux.app.eveng1.EvenG1DevicePair pair = g1Manager.getConnectedPair();
+                                if (pair != null) {
+                                    configManager.saveCurrentDevice(pair);
+                                    showToast("G1 saved for quick connect!", false);
+                                }
+                                break;
+                            case 2: // Disconnect
+                                g1Manager.disconnect();
+                                showToast("Disconnected from EVEN G1", false);
+                                break;
+                            case 3: // Reconnect
+                                g1Manager.disconnect();
+                                showToast("Disconnected. Scanning...", false);
+                                startG1Scan(g1Manager);
+                                break;
+                        }
+                    } else {
+                        // Disconnected state options
+                        if (savedDevice != null) {
+                            switch (which) {
+                                case 0: // Connect to saved device
+                                    showToast("Connecting to saved G1...", false);
+                                    g1Manager.connectToSavedDevice(savedDevice);
+                                    break;
+                                case 1: // Scan for new devices
+                                    startG1Scan(g1Manager);
+                                    break;
+                                case 2: // Clear saved device
+                                    configManager.clearSavedDevice();
+                                    showToast("Saved device cleared", false);
+                                    break;
+                            }
+                        } else {
+                            // No saved device - only scan option
+                            if (which == 0) {
+                                startG1Scan(g1Manager);
                             }
                         }
+                    }
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+    
+    /**
+     * Start G1 device scan and show results.
+     */
+    private void startG1Scan(com.termux.app.eveng1.EvenG1Manager g1Manager) {
+        showToast("Scanning for EVEN G1 devices...", false);
+        g1Manager.startScan();
 
-                        if (channels.isEmpty()) {
-                            showToast("No EVEN G1 devices found", true);
-                            g1Manager.stopScan();
-                            return;
-                        }
-
-                        g1Manager.stopScan();
-
-                        // Show channel selection
-                        new AlertDialog.Builder(this)
-                            .setTitle("Select Channel")
-                            .setItems(channels.toArray(new String[0]), (dlg, idx) -> {
-                                String selectedChannel = channels.get(idx);
-                                g1Manager.connect(selectedChannel);
-                                showToast("Connecting to Channel " + selectedChannel + "...", false);
-                            })
-                            .setNegativeButton("Cancel", null)
-                            .show();
-                    }, 5000); // 5 second scan
-                } else {
-                    // Connect to saved configuration
-                    com.termux.app.eveng1.EvenG1ConnectionConfig config = configs.get(which - 1);
-                    // For saved configs, we would need to implement reconnection by MAC address
-                    showToast("Connecting to " + config.getName() + "...", false);
-                    // TODO: Implement saved connection
+        // Show scanning dialog with discovered devices
+        new android.os.Handler().postDelayed(() -> {
+            List<com.termux.app.eveng1.EvenG1Device> devices = g1Manager.getDiscoveredDevices();
+            List<String> channels = new ArrayList<>();
+            for (com.termux.app.eveng1.EvenG1Device device : devices) {
+                String channel = device.getChannelNumber();
+                if (!channels.contains(channel)) {
+                    channels.add(channel);
                 }
-            })
-            .setNegativeButton("Cancel", null)
-            .show();
+            }
+
+            if (channels.isEmpty()) {
+                showToast("No EVEN G1 devices found. Make sure glasses are out of case and not connected to other apps.", true);
+                g1Manager.stopScan();
+                return;
+            }
+
+            g1Manager.stopScan();
+
+            // Show channel selection
+            String[] channelOptions = new String[channels.size()];
+            for (int i = 0; i < channels.size(); i++) {
+                channelOptions[i] = "Channel " + channels.get(i);
+            }
+            
+            new AlertDialog.Builder(this)
+                    .setTitle("Select EVEN G1 Channel")
+                    .setItems(channelOptions, (dlg, idx) -> {
+                        String selectedChannel = channels.get(idx);
+                        g1Manager.connect(selectedChannel);
+                        showToast("Connecting to Channel " + selectedChannel + "...", false);
+                    })
+                    .setNegativeButton("Cancel", null)
+                    .show();
+        }, 5000); // 5 second scan
     }
 
     /**
@@ -1768,30 +1833,30 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         input.setText("Hello from Termux!");
 
         new AlertDialog.Builder(this)
-            .setTitle("Send Text to EVEN G1")
-            .setView(input)
-            .setPositiveButton("Send", (dialog, which) -> {
-                String text = input.getText().toString();
-                if (!text.isEmpty()) {
-                    com.termux.app.eveng1.EvenG1Manager manager = com.termux.app.eveng1.EvenG1Manager.getInstance();
-                    android.os.Handler handler = new android.os.Handler();
+                .setTitle("Send Text to EVEN G1")
+                .setView(input)
+                .setPositiveButton("Send", (dialog, which) -> {
+                    String text = input.getText().toString();
+                    if (!text.isEmpty()) {
+                        com.termux.app.eveng1.EvenG1Manager manager = com.termux.app.eveng1.EvenG1Manager.getInstance();
+                        android.os.Handler handler = new android.os.Handler();
 
-                    com.termux.app.eveng1.EvenG1Protocol.sendText(manager, text, handler,
-                        new com.termux.app.eveng1.EvenG1Protocol.TextSendCallback() {
-                            @Override
-                            public void onSuccess() {
-                                runOnUiThread(() -> showToast("Text sent successfully!", false));
-                            }
+                        com.termux.app.eveng1.EvenG1Protocol.sendText(manager, text, handler,
+                                new com.termux.app.eveng1.EvenG1Protocol.TextSendCallback() {
+                                    @Override
+                                    public void onSuccess() {
+                                        runOnUiThread(() -> showToast("Text sent successfully!", false));
+                                    }
 
-                            @Override
-                            public void onFailure(@NonNull String error) {
-                                runOnUiThread(() -> showToast("Send failed: " + error, true));
-                            }
-                        });
-                }
-            })
-            .setNegativeButton("Cancel", null)
-            .show();
+                                    @Override
+                                    public void onFailure(@NonNull String error) {
+                                        runOnUiThread(() -> showToast("Send failed: " + error, true));
+                                    }
+                                });
+                    }
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
     }
 
     /**
@@ -1813,10 +1878,11 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
 
             showToast("ディレクトリ取得中...", false);
 
-            dirNavManager.listDirectories(session, new DirectoryNavigationManager.DirectoryListCallback() {
+            // Use new browse method for file explorer-like navigation
+            dirNavManager.browseDirectories(session, new DirectoryNavigationManager.DirectoryBrowseCallback() {
                 @Override
-                public void onDirectoriesFound(List<String> directories) {
-                    showDirectoryNavigationDialog(directories, dirNavManager);
+                public void onResult(String currentPath, List<String> directories) {
+                    showDirectoryBrowserDialog(currentPath, directories, dirNavManager);
                 }
 
                 @Override
@@ -1828,10 +1894,11 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     }
 
     /**
-     * Shows a dialog with the list of directories.
-     * User can select a directory to navigate to.
+     * Shows a file explorer-like dialog for directory navigation.
+     * User can browse directories and press "決定" to stay at current location.
      */
-    private void showDirectoryNavigationDialog(List<String> directories, DirectoryNavigationManager dirNavManager) {
+    private void showDirectoryBrowserDialog(String currentPath, List<String> directories, 
+                                            DirectoryNavigationManager dirNavManager) {
         // Format directory names with icons
         String[] dirNames = new String[directories.size()];
         for (int i = 0; i < directories.size(); i++) {
@@ -1843,28 +1910,46 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             }
         }
 
-        new AlertDialog.Builder(this)
-                .setTitle("ディレクトリ選択 (" + (directories.size() - 1) + ")")
-                .setItems(dirNames, (dialog, which) -> {
-                    String selectedDir = directories.get(which);
-                    navigateToDirectory(selectedDir, dirNavManager);
-                })
-                .setNegativeButton("キャンセル", null)
-                .show();
-    }
-
-    /**
-     * Navigate to the selected directory by sending cd command.
-     */
-    private void navigateToDirectory(String dirName, DirectoryNavigationManager dirNavManager) {
-        TerminalSession session = getCurrentSession();
-        if (session == null) {
-            showToast("アクティブなセッションがありません", true);
-            return;
+        // Shorten path for display if too long
+        String displayPath = currentPath;
+        if (displayPath.length() > 35) {
+            displayPath = "..." + displayPath.substring(displayPath.length() - 32);
         }
 
-        dirNavManager.changeDirectory(session, dirName);
-        showToast("移動: " + dirName, false);
+        new AlertDialog.Builder(this)
+                .setTitle("📂 " + displayPath)
+                .setItems(dirNames, (dialog, which) -> {
+                    String selectedDir = directories.get(which);
+                    TerminalSession session = getCurrentSession();
+                    if (session == null) {
+                        showToast("セッションがありません", true);
+                        return;
+                    }
+
+                    showToast("移動中...", false);
+
+                    // Navigate and show new directory listing
+                    dirNavManager.navigateAndBrowse(session, selectedDir, 
+                        new DirectoryNavigationManager.DirectoryBrowseCallback() {
+                            @Override
+                            public void onResult(String newPath, List<String> newDirectories) {
+                                // Show dialog again with new location
+                                showDirectoryBrowserDialog(newPath, newDirectories, dirNavManager);
+                            }
+
+                            @Override
+                            public void onError(String message) {
+                                showToast(message, true);
+                            }
+                        });
+                })
+                .setPositiveButton("✓ ここに決定", (dialog, which) -> {
+                    showToast("現在地: " + currentPath, false);
+                })
+                .setNegativeButton("キャンセル", (dialog, which) -> {
+                    // Go back to original directory? For now just close
+                })
+                .show();
     }
 
     /**
@@ -1916,10 +2001,97 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                 .setTitle("Claude 会話履歴 (" + conversations.size() + ")")
                 .setItems(convNames, (dialog, which) -> {
                     ConversationSyncManager.ConversationFile selected = conversations.get(which);
-                    downloadConversation(selected, syncManager);
+
+                    // Show action options
+                    new AlertDialog.Builder(TermuxActivity.this)
+                            .setTitle(selected.filename)
+                            .setItems(new String[] { "ダウンロードして保存", "ARグラスに送信 (最新のコメント)" }, (subDialog, subWhich) -> {
+                                if (subWhich == 0) {
+                                    downloadConversation(selected, syncManager);
+                                } else {
+                                    parseAndSendToAr(selected, syncManager);
+                                }
+                            })
+                            .show();
                 })
                 .setNegativeButton("キャンセル", null)
                 .show();
+    }
+
+    /**
+     * Downloads and sends the conversation to AR glasses.
+     */
+    private void parseAndSendToAr(ConversationSyncManager.ConversationFile conversation,
+            ConversationSyncManager syncManager) {
+        TerminalSession session = getCurrentSession();
+        if (session == null) {
+            showToast("アクティブなセッションがありません", true);
+            return;
+        }
+
+        if (!EvenG1Manager.getInstance().isConnected()) {
+            showToast("ARグラスが接続されていません", true);
+            return;
+        }
+
+        showToast("AR用に取得中: " + conversation.filename, false);
+
+        syncManager.downloadFile(session, conversation, new ConversationSyncManager.FileDownloadCallback() {
+            @Override
+            public void onDownloadComplete(String localPath) {
+                // Parse file to get comments
+                List<String> comments = ClaudeChatParser.getAgentComments(localPath);
+                if (comments.isEmpty()) {
+                    runOnUiThread(() -> showToast("エージェントのコメントが見つかりませんでした", true));
+                    return;
+                }
+
+                // Get latest comment
+                String latestComment = comments.get(comments.size() - 1);
+
+                // Create Pager
+                ArTextPager pager = new ArTextPager(
+                        EvenG1Manager.getInstance(),
+                        new android.os.Handler(android.os.Looper.getMainLooper()),
+                        latestComment);
+
+                // Send first page and show controller
+                runOnUiThread(() -> {
+                    pager.sendCurrentPage(null);
+                    showArControllerDialog(pager);
+                });
+            }
+
+            @Override
+            public void onError(String message) {
+                runOnUiThread(() -> showToast("エラー: " + message, true));
+            }
+        });
+    }
+
+    private void showArControllerDialog(ArTextPager pager) {
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        builder.setTitle("AR View (" + pager.getCurrentPageNum() + "/" + pager.getTotalPages() + ")");
+        builder.setMessage("ARグラスに表示中...");
+
+        // Use standard buttons but prevent auto-dismiss
+        builder.setPositiveButton("次へ", null);
+        builder.setNegativeButton("前へ", null);
+        builder.setNeutralButton("閉じる", (dialog, which) -> dialog.dismiss());
+
+        AlertDialog dialog = builder.create();
+        dialog.show();
+
+        // Override onClickListeners to prevent dismiss
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            pager.nextPage(null);
+            dialog.setTitle("AR View (" + pager.getCurrentPageNum() + "/" + pager.getTotalPages() + ")");
+        });
+
+        dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener(v -> {
+            pager.prevPage(null);
+            dialog.setTitle("AR View (" + pager.getCurrentPageNum() + "/" + pager.getTotalPages() + ")");
+        });
     }
 
     /**

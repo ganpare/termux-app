@@ -342,6 +342,60 @@ public class EvenG1Manager {
     }
 
     /**
+     * Connects to a saved device directly by MAC address (no scan needed).
+     *
+     * @param savedDevice The saved device configuration
+     */
+    @SuppressLint("MissingPermission")
+    public void connectToSavedDevice(@NonNull EvenG1ConfigManager.SavedG1Device savedDevice) {
+        if (bluetoothAdapter == null) {
+            notifyConnectionFailed("Bluetooth not available");
+            return;
+        }
+
+        // Create device objects from saved addresses
+        EvenG1Device left = new EvenG1Device(
+            savedDevice.leftDeviceName,
+            savedDevice.leftDeviceAddress,
+            savedDevice.channelNumber
+        );
+        EvenG1Device right = new EvenG1Device(
+            savedDevice.rightDeviceName,
+            savedDevice.rightDeviceAddress,
+            savedDevice.channelNumber
+        );
+
+        connectedPair = new EvenG1DevicePair(left, right);
+        Logger.logDebug(LOG_TAG, "Connecting to saved device: Channel " + savedDevice.channelNumber);
+
+        BluetoothDevice leftBtDevice = bluetoothAdapter.getRemoteDevice(savedDevice.leftDeviceAddress);
+
+        // Connect LEFT first (RIGHT will connect after LEFT succeeds in onServicesDiscovered)
+        try {
+            BluetoothGatt leftGatt = leftBtDevice.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE);
+            if (leftGatt != null) {
+                left.setGatt(leftGatt);
+                Logger.logDebug(LOG_TAG, "Connecting to saved LEFT device...");
+            } else {
+                notifyConnectionFailed("Failed to create GATT connection to LEFT device");
+            }
+        } catch (Exception e) {
+            Logger.logStackTraceWithMessage(LOG_TAG, "connectGatt failed for saved device", e);
+            notifyConnectionFailed("Connection error: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Gets the currently connected device pair.
+     *
+     * @return Connected pair, or null if not connected
+     */
+    @Nullable
+    public EvenG1DevicePair getConnectedPair() {
+        return connectedPair;
+    }
+
+    /**
      * Disconnects from current device pair.
      */
     @SuppressLint("MissingPermission")
@@ -602,11 +656,6 @@ public class EvenG1Manager {
                 callback.onConnectionFailed(error);
             }
         });
-    }
-
-    @Nullable
-    public EvenG1DevicePair getConnectedPair() {
-        return connectedPair;
     }
 
     @NonNull

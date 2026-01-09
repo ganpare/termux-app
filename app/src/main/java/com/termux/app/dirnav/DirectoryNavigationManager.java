@@ -16,12 +16,15 @@ import java.util.List;
  * - List subdirectories by sending a marker-wrapped command
  * - Parse directory names from terminal buffer output
  * - Navigate to selected directories
+ * - Browse directories like a file explorer
  */
 public class DirectoryNavigationManager {
 
     // Unique markers that won't appear in normal terminal output
     public static final String MARKER_START = "__DIR_NAV_START_8qW3rT5__";
     public static final String MARKER_END = "__DIR_NAV_END_8qW3rT5__";
+    public static final String PWD_MARKER_START = "__DIR_NAV_PWD_START__";
+    public static final String PWD_MARKER_END = "__DIR_NAV_PWD_END__";
 
     // Delay before reading terminal buffer (ms)
     private static final int READ_DELAY_MS = 500;
@@ -33,6 +36,14 @@ public class DirectoryNavigationManager {
      */
     public interface DirectoryListCallback {
         void onDirectoriesFound(List<String> directories);
+        void onError(String message);
+    }
+
+    /**
+     * Callback interface for directory browse results (includes current path).
+     */
+    public interface DirectoryBrowseCallback {
+        void onResult(String currentPath, List<String> directories);
         void onError(String message);
     }
 
@@ -49,6 +60,17 @@ public class DirectoryNavigationManager {
         return "echo '" + MARKER_START + "' && " +
                "echo '..' && " +  // Always include parent directory
                "ls -1d */ 2>/dev/null | sed 's|/$||' && " +  // Remove trailing slashes
+               "echo '" + MARKER_END + "'\n";
+    }
+
+    /**
+     * Generates the command to list directories AND get current path.
+     */
+    public String getListDirectoriesWithPwdCommand() {
+        return "echo '" + PWD_MARKER_START + "' && pwd && echo '" + PWD_MARKER_END + "' && " +
+               "echo '" + MARKER_START + "' && " +
+               "echo '..' && " +
+               "ls -1d */ 2>/dev/null | sed 's|/$||' && " +
                "echo '" + MARKER_END + "'\n";
     }
 
@@ -91,6 +113,105 @@ public class DirectoryNavigationManager {
                 callback.onDirectoriesFound(directories);
             }
         }, READ_DELAY_MS);
+    }
+
+    /**
+     * Browse directories - gets current path and directory list.
+     * Used for file explorer-like navigation.
+     *
+     * @param session The terminal session to use
+     * @param callback Callback to receive current path and directory list
+     */
+    public void browseDirectories(TerminalSession session, DirectoryBrowseCallback callback) {
+        if (session == null) {
+            callback.onError("No active terminal session");
+            return;
+        }
+
+        // Send command to get pwd and directory list
+        String command = getListDirectoriesWithPwdCommand();
+        byte[] data = command.getBytes();
+        session.write(data, 0, data.length);
+
+        // Wait for output, then parse
+        mainHandler.postDelayed(() -> {
+            String transcript = ShellUtils.getTerminalSessionTranscriptText(session, false, true);
+            String currentPath = parseCurrentPath(transcript);
+            List<String> directories = parseDirectoryList(transcript);
+
+            if (currentPath == null) {
+                currentPath = "???";
+            }
+            if (directories == null) {
+                directories = new ArrayList<>();
+                directories.add("..");
+            }
+
+            callback.onResult(currentPath, directories);
+        }, READ_DELAY_MS);
+    }
+
+    /**
+     * Navigate to a directory and then get the new directory listing.
+     *
+     * @param session The terminal session
+     * @param dirName The directory to navigate to
+     * @param callback Callback to receive new path and directory list
+     */
+    public void navigateAndBrowse(TerminalSession session, String dirName, DirectoryBrowseCallback callback) {
+        if (session == null || dirName == null) {
+            callback.onError("Invalid session or directory");
+            return;
+        }
+
+        // First cd, then get pwd and list
+        String escapedName = dirName.replace("'", "'\\''");
+        String command = "cd '" + escapedName + "' && " + getListDirectoriesWithPwdCommand();
+        byte[] data = command.getBytes();
+        session.write(data, 0, data.length);
+
+        // Wait for output, then parse
+        mainHandler.postDelayed(() -> {
+            String transcript = ShellUtils.getTerminalSessionTranscriptText(session, false, true);
+            String currentPath = parseCurrentPath(transcript);
+            List<String> directories = parseDirectoryList(transcript);
+
+            if (currentPath == null) {
+                currentPath = "???";
+            }
+            if (directories == null) {
+                directories = new ArrayList<>();
+                directories.add("..");
+            }
+
+            callback.onResult(currentPath, directories);
+        }, READ_DELAY_MS);
+    }
+
+    /**
+     * Parses current path from transcript.
+     */
+    public String parseCurrentPath(String transcript) {
+        if (transcript == null || transcript.isEmpty()) {
+            return null;
+        }
+
+        int startIndex = transcript.lastIndexOf(PWD_MARKER_START);
+        int endIndex = transcript.lastIndexOf(PWD_MARKER_END);
+
+        if (startIndex == -1 || endIndex == -1 || endIndex <= startIndex) {
+            return null;
+        }
+
+        String between = transcript.substring(startIndex + PWD_MARKER_START.length(), endIndex);
+        String[] lines = between.split("\n");
+        for (String line : lines) {
+            String trimmed = line.trim();
+            if (!trimmed.isEmpty()) {
+                return trimmed;
+            }
+        }
+        return null;
     }
 
     /**
