@@ -1,5 +1,7 @@
 # Termux application (Fork)
 
+**English** | [日本語](./README.ja.md)
+
 > **🔀 This is a fork of [termux/termux-app](https://github.com/termux/termux-app)**
 >
 > This fork adds custom UI features for SSH connection management and byobu session control, designed for power users who frequently work with remote servers via terminal.
@@ -20,6 +22,8 @@
 - **CUSTOM Button**: Save and execute frequently used commands
 - Add, edit, delete, and reorder custom commands
 - One-tap command execution
+- **Developer Presets**: Common AI agent commands (claude, cursor, codex, etc.) are automatically populated into an "AI Agents" folder on startup.
+- **Automation**: Developers can define additional persistent presets in `CustomCommandManager.java#ensureDefaultCommands()`.
 
 ## 📋 UI Buttons
 

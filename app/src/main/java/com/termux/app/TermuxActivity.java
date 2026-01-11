@@ -403,6 +403,12 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             addTermuxActivityRootViewGlobalLayoutListener();
 
         registerTermuxActivityBroadcastReceiver();
+
+        // Ensure default AI agent commands exist
+        if (mCustomCommandManager == null) {
+            mCustomCommandManager = new CustomCommandManager(this);
+        }
+        mCustomCommandManager.ensureDefaultCommands();
     }
 
     @Override
@@ -1090,14 +1096,19 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             return;
 
         customButton.setOnClickListener(v -> {
-            showCustomCommandsDialog();
+            showCustomCommandsDialog(false);
+        });
+
+        customButton.setOnLongClickListener(v -> {
+            showCustomCommandsDialog(true);
+            return true;
         });
     }
 
     /**
      * Show dialog with custom commands list organized by folders.
      */
-    private void showCustomCommandsDialog() {
+    private void showCustomCommandsDialog(boolean manageMode) {
         List<CommandFolder> folders = mCustomCommandManager.getAllFolders();
         List<CustomCommand> rootCommands = mCustomCommandManager.getCommandsInFolder(null);
 
@@ -1106,14 +1117,21 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         List<Object> dataItems = new ArrayList<>(); // Store folder/command objects
 
         // Menu options
-        displayItems.add("➕ 新規コマンド");
-        dataItems.add("NEW_COMMAND");
-        displayItems.add("📁 新規フォルダ");
-        dataItems.add("NEW_FOLDER");
-        displayItems.add("📤 エクスポート");
-        dataItems.add("EXPORT");
-        displayItems.add("📥 インポート");
-        dataItems.add("IMPORT");
+        if (manageMode) {
+            displayItems.add("➕ 新規コマンド");
+            dataItems.add("NEW_COMMAND");
+            displayItems.add("📁 新規フォルダ");
+            dataItems.add("NEW_FOLDER");
+            displayItems.add("📤 エクスポート");
+            dataItems.add("EXPORT");
+            displayItems.add("📥 インポート");
+            dataItems.add("IMPORT");
+            displayItems.add("◀️ 実行モードに戻る");
+            dataItems.add("EXIT_MANAGE");
+        } else {
+            displayItems.add("⚙️ コマンド管理・編集...");
+            dataItems.add("ENTER_MANAGE");
+        }
 
         // Folders
         for (CommandFolder folder : folders) {
@@ -1124,74 +1142,95 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
 
         // Root-level commands
         for (CustomCommand cmd : rootCommands) {
-            displayItems.add("📄 " + cmd.getName());
+            displayItems.add(manageMode ? "🔧 " + cmd.getName() : "📄 " + cmd.getName());
             dataItems.add(cmd);
         }
 
         int totalCount = mCustomCommandManager.getAllCommands().size();
         String[] items = displayItems.toArray(new String[0]);
+        String title = manageMode ? "カスタムコマンド管理 (" + totalCount + ")" : "カスタムコマンド (" + totalCount + ")";
 
         new AlertDialog.Builder(this)
-                .setTitle("カスタムコマンド (" + totalCount + ")")
+                .setTitle(title)
                 .setItems(items, (dialog, which) -> {
                     Object selected = dataItems.get(which);
                     if ("NEW_COMMAND".equals(selected)) {
-                        showAddEditCommandDialog(null, null);
+                        showAddEditCommandDialog(null, null, true);
                     } else if ("NEW_FOLDER".equals(selected)) {
-                        showAddFolderDialog();
+                        showAddFolderDialog(true);
                     } else if ("EXPORT".equals(selected)) {
                         exportCustomCommands();
                     } else if ("IMPORT".equals(selected)) {
                         importCustomCommands();
+                    } else if ("ENTER_MANAGE".equals(selected)) {
+                        showCustomCommandsDialog(true);
+                    } else if ("EXIT_MANAGE".equals(selected)) {
+                        showCustomCommandsDialog(false);
                     } else if (selected instanceof CommandFolder) {
-                        showFolderContentsDialog((CommandFolder) selected);
+                        showFolderContentsDialog((CommandFolder) selected, manageMode);
                     } else if (selected instanceof CustomCommand) {
-                        showCommandActionsDialog((CustomCommand) selected, null);
+                        if (manageMode) {
+                            showCommandActionsDialog((CustomCommand) selected, null);
+                        } else {
+                            executeCustomCommand((CustomCommand) selected);
+                        }
                     }
                 })
                 .setNegativeButton("閉じる", null)
                 .show();
     }
 
+    private void showCustomCommandsDialog() {
+        showCustomCommandsDialog(false);
+    }
+
     /**
      * Show contents of a folder.
      */
-    private void showFolderContentsDialog(CommandFolder folder) {
+    private void showFolderContentsDialog(CommandFolder folder, boolean manageMode) {
         List<CustomCommand> commands = mCustomCommandManager.getCommandsInFolder(folder.getId());
 
         List<String> displayItems = new ArrayList<>();
-        displayItems.add("➕ このフォルダにコマンドを追加");
-        displayItems.add("✏️ フォルダ名を変更");
-        displayItems.add("🗑️ フォルダを削除");
+        if (manageMode) {
+            displayItems.add("➕ このフォルダにコマンドを追加");
+            displayItems.add("✏️ フォルダ名を変更");
+            displayItems.add("🗑️ フォルダを削除");
+        }
 
         for (CustomCommand cmd : commands) {
-            displayItems.add("📄 " + cmd.getName());
+            displayItems.add(manageMode ? "🔧 " + cmd.getName() : "📄 " + cmd.getName());
         }
 
         String[] items = displayItems.toArray(new String[0]);
+        String title = (manageMode ? "📁 [管理] " : "📁 ") + folder.getName();
 
         new AlertDialog.Builder(this)
-                .setTitle("📁 " + folder.getName())
+                .setTitle(title)
                 .setItems(items, (dialog, which) -> {
-                    if (which == 0) {
-                        showAddEditCommandDialog(null, folder.getId());
-                    } else if (which == 1) {
-                        showRenameFolderDialog(folder);
-                    } else if (which == 2) {
-                        confirmDeleteFolder(folder);
+                    if (manageMode) {
+                        if (which == 0) {
+                            showAddEditCommandDialog(null, folder.getId(), true);
+                        } else if (which == 1) {
+                            showRenameFolderDialog(folder, true);
+                        } else if (which == 2) {
+                            confirmDeleteFolder(folder, true);
+                        } else {
+                            CustomCommand cmd = commands.get(which - 3);
+                            showCommandActionsDialog(cmd, folder.getId());
+                        }
                     } else {
-                        CustomCommand cmd = commands.get(which - 3);
-                        showCommandActionsDialog(cmd, folder.getId());
+                        CustomCommand cmd = commands.get(which);
+                        executeCustomCommand(cmd);
                     }
                 })
-                .setNegativeButton("戻る", (d, w) -> showCustomCommandsDialog())
+                .setNegativeButton("戻る", (d, w) -> showCustomCommandsDialog(manageMode))
                 .show();
     }
 
     /**
      * Show dialog to add a new folder.
      */
-    private void showAddFolderDialog() {
+    private void showAddFolderDialog(boolean manageMode) {
         final EditText input = new EditText(this);
         input.setHint("フォルダ名");
         input.setSingleLine();
@@ -1205,7 +1244,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                     if (!name.isEmpty()) {
                         mCustomCommandManager.createFolder(name);
                         showToast("フォルダを作成: " + name, false);
-                        showCustomCommandsDialog();
+                        showCustomCommandsDialog(manageMode);
                     }
                 })
                 .setNegativeButton("キャンセル", null)
@@ -1215,7 +1254,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     /**
      * Show dialog to rename a folder.
      */
-    private void showRenameFolderDialog(CommandFolder folder) {
+    private void showRenameFolderDialog(CommandFolder folder, boolean manageMode) {
         final EditText input = new EditText(this);
         input.setText(folder.getName());
         input.setSingleLine();
@@ -1229,7 +1268,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                     if (!name.isEmpty()) {
                         mCustomCommandManager.updateFolder(folder.getId(), name);
                         showToast("フォルダ名を変更: " + name, false);
-                        showCustomCommandsDialog();
+                        showCustomCommandsDialog(manageMode);
                     }
                 })
                 .setNegativeButton("キャンセル", null)
@@ -1239,7 +1278,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     /**
      * Confirm before deleting a folder.
      */
-    private void confirmDeleteFolder(CommandFolder folder) {
+    private void confirmDeleteFolder(CommandFolder folder, boolean manageMode) {
         int cmdCount = mCustomCommandManager.getCommandCountInFolder(folder.getId());
 
         String message = "フォルダ「" + folder.getName() + "」を削除しますか？";
@@ -1259,17 +1298,17 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                         if (which == 0) {
                             mCustomCommandManager.deleteFolder(folder.getId(), false);
                             showToast("フォルダを削除（コマンドは保持）", false);
-                            showCustomCommandsDialog();
+                            showCustomCommandsDialog(manageMode);
                         } else if (which == 1) {
                             mCustomCommandManager.deleteFolder(folder.getId(), true);
                             showToast("フォルダとコマンドを削除", false);
-                            showCustomCommandsDialog();
+                            showCustomCommandsDialog(manageMode);
                         }
                     } else {
                         if (which == 0) {
                             mCustomCommandManager.deleteFolder(folder.getId(), false);
                             showToast("フォルダを削除", false);
-                            showCustomCommandsDialog();
+                            showCustomCommandsDialog(manageMode);
                         }
                     }
                 })
@@ -1370,7 +1409,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     /**
      * Show dialog to add or edit a custom command.
      */
-    private void showAddEditCommandDialog(CustomCommand existing, String folderId) {
+    private void showAddEditCommandDialog(CustomCommand existing, String folderId, boolean manageMode) {
         boolean isEdit = existing != null;
 
         // Create dialog view
@@ -1441,10 +1480,15 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                         mCustomCommandManager.saveCommand(name, command, selectedFolderId);
                         showToast("追加しました: " + name, false);
                     }
+                    showCustomCommandsDialog(manageMode);
                 })
                 .setNegativeButton("キャンセル", null);
 
         builder.show();
+    }
+
+    private void showAddEditCommandDialog(CustomCommand existing, String folderId) {
+        showAddEditCommandDialog(existing, folderId, false);
     }
 
     /**
@@ -1726,14 +1770,14 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
      */
     private void showG1ConnectionDialog(com.termux.app.eveng1.EvenG1ConfigManager configManager,
             com.termux.app.eveng1.EvenG1Manager g1Manager) {
-        
+
         // Check current connection status
         boolean isConnected = g1Manager.isConnected();
         com.termux.app.eveng1.EvenG1ConfigManager.SavedG1Device savedDevice = configManager.getSavedDevice();
-        
+
         // Create dialog options
         List<String> options = new ArrayList<>();
-        
+
         if (isConnected) {
             // Connected state options
             options.add("📤 Send Text to G1");
@@ -1753,7 +1797,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         }
 
         String title = isConnected ? "EVEN G1 (Connected ✓)" : "EVEN G1 Connection";
-        
+
         new AlertDialog.Builder(this)
                 .setTitle(title)
                 .setItems(options.toArray(new String[0]), (dialog, which) -> {
@@ -1810,7 +1854,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                 .setNegativeButton("Cancel", null)
                 .show();
     }
-    
+
     /**
      * Start G1 device scan and show results.
      */
@@ -1830,7 +1874,9 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             }
 
             if (channels.isEmpty()) {
-                showToast("No EVEN G1 devices found. Make sure glasses are out of case and not connected to other apps.", true);
+                showToast(
+                        "No EVEN G1 devices found. Make sure glasses are out of case and not connected to other apps.",
+                        true);
                 g1Manager.stopScan();
                 return;
             }
@@ -1842,7 +1888,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             for (int i = 0; i < channels.size(); i++) {
                 channelOptions[i] = "Channel " + channels.get(i);
             }
-            
+
             new AlertDialog.Builder(this)
                     .setTitle("Select EVEN G1 Channel")
                     .setItems(channelOptions, (dlg, idx) -> {
@@ -1877,10 +1923,11 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                                     @Override
                                     public void onSuccess() {
                                         runOnUiThread(() -> showToast("Text sent! (5秒後に消えます)", false));
-                                        
+
                                         // Exit to dashboard after 5 seconds
                                         handler.postDelayed(() -> {
-                                            byte[] exitPacket = com.termux.app.eveng1.EvenG1Protocol.createExitToDashboardPacket();
+                                            byte[] exitPacket = com.termux.app.eveng1.EvenG1Protocol
+                                                    .createExitToDashboardPacket();
                                             manager.sendData(exitPacket);
                                         }, 5000);
                                     }
@@ -1901,7 +1948,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
      */
     private void openClaudeHistoryFilePicker() {
         if (mClaudeHistoryLauncher != null) {
-            mClaudeHistoryLauncher.launch(new String[]{"*/*"});
+            mClaudeHistoryLauncher.launch(new String[] { "*/*" });
         } else {
             showToast("ファイル選択機能が初期化されていません", true);
         }
@@ -1932,7 +1979,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
 
             // Parse the file
             List<String> comments = com.termux.app.claude.ClaudeChatParser.getAgentComments(tempFile.getAbsolutePath());
-            
+
             // Clean up temp file
             tempFile.delete();
 
@@ -1995,7 +2042,8 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
      * Shows page navigation dialog for AR display.
      */
     private void showPageNavigationDialog() {
-        if (mCurrentArPager == null) return;
+        if (mCurrentArPager == null)
+            return;
 
         String title = "📖 ページ " + mCurrentArPager.getCurrentPageNum() + " / " + mCurrentArPager.getTotalPages();
 
@@ -2020,6 +2068,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                             public void onSuccess() {
                                 runOnUiThread(() -> showPageNavigationDialog());
                             }
+
                             @Override
                             public void onFailure(@NonNull String error) {
                                 runOnUiThread(() -> showToast("送信失敗: " + error, true));
@@ -2032,6 +2081,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                             public void onSuccess() {
                                 runOnUiThread(() -> showPageNavigationDialog());
                             }
+
                             @Override
                             public void onFailure(@NonNull String error) {
                                 runOnUiThread(() -> showToast("送信失敗: " + error, true));
@@ -2044,6 +2094,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                             public void onSuccess() {
                                 runOnUiThread(() -> showPageNavigationDialog());
                             }
+
                             @Override
                             public void onFailure(@NonNull String error) {
                                 runOnUiThread(() -> showToast("送信失敗: " + error, true));
@@ -2100,8 +2151,8 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
      * Shows a file explorer-like dialog for directory navigation.
      * User can browse directories and press "決定" to stay at current location.
      */
-    private void showDirectoryBrowserDialog(String currentPath, List<String> directories, 
-                                            DirectoryNavigationManager dirNavManager) {
+    private void showDirectoryBrowserDialog(String currentPath, List<String> directories,
+            DirectoryNavigationManager dirNavManager) {
         // Format directory names with icons
         String[] dirNames = new String[directories.size()];
         for (int i = 0; i < directories.size(); i++) {
@@ -2132,19 +2183,19 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                     showToast("移動中...", false);
 
                     // Navigate and show new directory listing
-                    dirNavManager.navigateAndBrowse(session, selectedDir, 
-                        new DirectoryNavigationManager.DirectoryBrowseCallback() {
-                            @Override
-                            public void onResult(String newPath, List<String> newDirectories) {
-                                // Show dialog again with new location
-                                showDirectoryBrowserDialog(newPath, newDirectories, dirNavManager);
-                            }
+                    dirNavManager.navigateAndBrowse(session, selectedDir,
+                            new DirectoryNavigationManager.DirectoryBrowseCallback() {
+                                @Override
+                                public void onResult(String newPath, List<String> newDirectories) {
+                                    // Show dialog again with new location
+                                    showDirectoryBrowserDialog(newPath, newDirectories, dirNavManager);
+                                }
 
-                            @Override
-                            public void onError(String message) {
-                                showToast(message, true);
-                            }
-                        });
+                                @Override
+                                public void onError(String message) {
+                                    showToast(message, true);
+                                }
+                            });
                 })
                 .setPositiveButton("✓ ここに決定", (dialog, which) -> {
                     showToast("現在地: " + currentPath, false);
@@ -2170,9 +2221,9 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             new AlertDialog.Builder(this)
                     .setTitle("Claude 会話履歴")
                     .setItems(new String[] {
-                        "🤖 Claude→AR (自動同期)",
-                        "👁️ AR Viewを開く",
-                        "🔄 サーバー再起動"
+                            "🤖 Claude→AR (自動同期)",
+                            "👁️ AR Viewを開く",
+                            "🔄 サーバー再起動"
                     }, (dialog, which) -> {
                         if (which == 0) {
                             // Auto AR sync
@@ -2198,10 +2249,10 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     // Claude history server settings
     private static final int CLAUDE_SERVER_PORT = 8765;
     private String mCurrentSshHost = ""; // SSH host for HTTP server connection
-    
+
     // AutoArSyncManager instance
     private AutoArSyncManager mAutoArSyncManager;
-    
+
     /**
      * Shows dialog for automatic AR sync.
      * User inputs query, app sends to terminal and watches for file changes.
@@ -2211,116 +2262,114 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             showToast("SSH接続が必要です", true);
             return;
         }
-        
+
         TerminalSession session = getCurrentSession();
         if (session == null) {
             showToast("アクティブなセッションがありません", true);
             return;
         }
-        
+
         if (!EvenG1Manager.getInstance().isConnected()) {
             showToast("ARグラスが接続されていません", true);
             return;
         }
-        
+
         // Check if already watching
         if (mAutoArSyncManager != null && mAutoArSyncManager.isWatching()) {
             new AlertDialog.Builder(this)
-                .setTitle("監視中")
-                .setMessage("現在ファイル変更を監視中です。\n停止しますか？")
-                .setPositiveButton("停止", (d, w) -> {
-                    mAutoArSyncManager.stopWatching();
-                    showToast("監視を停止しました", false);
-                })
-                .setNegativeButton("継続", null)
-                .show();
+                    .setTitle("監視中")
+                    .setMessage("現在ファイル変更を監視中です。\n停止しますか？")
+                    .setPositiveButton("停止", (d, w) -> {
+                        mAutoArSyncManager.stopWatching();
+                        showToast("監視を停止しました", false);
+                    })
+                    .setNegativeButton("継続", null)
+                    .show();
             return;
         }
-        
+
         // Create input dialog
         android.widget.EditText input = new android.widget.EditText(this);
         input.setHint("Claudeに送るクエリを入力...");
         input.setMinLines(3);
         input.setGravity(android.view.Gravity.TOP);
-        
+
         // Add padding
         int padding = (int) (16 * getResources().getDisplayMetrics().density);
         android.widget.FrameLayout container = new android.widget.FrameLayout(this);
         android.widget.FrameLayout.LayoutParams params = new android.widget.FrameLayout.LayoutParams(
-            android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
-            android.widget.FrameLayout.LayoutParams.WRAP_CONTENT
-        );
-        params.setMargins(padding, padding/2, padding, 0);
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT);
+        params.setMargins(padding, padding / 2, padding, 0);
         input.setLayoutParams(params);
         container.addView(input);
-        
+
         new AlertDialog.Builder(this)
-            .setTitle("🤖 Claude→AR 自動同期")
-            .setMessage("クエリを送信後、Claudeの応答を自動でARに表示します\n(最大10分間監視)")
-            .setView(container)
-            .setPositiveButton("送信→AR", (dialog, which) -> {
-                String query = input.getText().toString().trim();
-                if (query.isEmpty()) {
-                    showToast("クエリを入力してください", true);
-                    return;
-                }
-                startAutoArSync(session, query);
-            })
-            .setNegativeButton("キャンセル", null)
-            .show();
+                .setTitle("🤖 Claude→AR 自動同期")
+                .setMessage("クエリを送信後、Claudeの応答を自動でARに表示します\n(最大10分間監視)")
+                .setView(container)
+                .setPositiveButton("送信→AR", (dialog, which) -> {
+                    String query = input.getText().toString().trim();
+                    if (query.isEmpty()) {
+                        showToast("クエリを入力してください", true);
+                        return;
+                    }
+                    startAutoArSync(session, query);
+                })
+                .setNegativeButton("キャンセル", null)
+                .show();
     }
-    
+
     /**
      * Starts automatic AR sync process.
      */
     private void startAutoArSync(TerminalSession session, String query) {
         mAutoArSyncManager = new AutoArSyncManager(mCurrentSshHost, CLAUDE_SERVER_PORT);
-        
+
         mAutoArSyncManager.startWatching(session, query, new AutoArSyncManager.SyncCallback() {
             @Override
             public void onWatchStarted() {
                 showToast("クエリ送信、監視開始...", false);
             }
-            
+
             @Override
             public void onPolling(int count, int remainingSeconds) {
                 // Update status (optional: could show in a persistent notification)
                 android.util.Log.d("AutoArSync", "Polling #" + count + ", remaining: " + remainingSeconds + "s");
             }
-            
+
             @Override
             public void onFileChanged() {
                 showToast("ファイル更新検出！ダウンロード中...", false);
             }
-            
+
             @Override
             public void onSyncComplete(String content) {
                 showToast("AR表示完了！", false);
                 // Show pager dialog for navigation
                 showAutoArPagerDialog(content);
             }
-            
+
             @Override
             public void onTimeout() {
                 showToast("タイムアウト（10分経過）", true);
             }
-            
+
             @Override
             public void onError(String message) {
                 showToast("エラー: " + message, true);
             }
         });
     }
-    
+
     /**
      * Shows AR pager dialog after auto sync completes.
      */
     private void showAutoArPagerDialog(String content) {
         ArTextPager pager = new ArTextPager(
-            EvenG1Manager.getInstance(),
-            new Handler(Looper.getMainLooper()),
-            content
-        );
+                EvenG1Manager.getInstance(),
+                new Handler(Looper.getMainLooper()),
+                content);
         showArControllerDialog(pager);
     }
 
@@ -2333,10 +2382,10 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             showToast("SSH接続が必要です。SSHボタンで接続してください。", true);
             return;
         }
-        
+
         connectToClaudeServer(mCurrentSshHost);
     }
-    
+
     /**
      * Restart Claude history server on SSH host.
      */
@@ -2354,17 +2403,17 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
 
         // Confirm restart
         new AlertDialog.Builder(this)
-            .setTitle("サーバー再起動")
-            .setMessage("HTTPサーバーを再起動しますか？\n\nホスト: " + mCurrentSshHost + "\nポート: " + CLAUDE_SERVER_PORT)
-            .setPositiveButton("再起動", (dialog, which) -> {
-                // Send restart command to terminal
-                String command = "pkill -f claude-history-server.py; sleep 1; nohup python3 ~/.local/bin/claude-history-server.py > /dev/null 2>&1 &\n";
-                byte[] data = command.getBytes();
-                session.write(data, 0, data.length);
-                showToast("サーバー再起動コマンドを送信しました", false);
-            })
-            .setNegativeButton("キャンセル", null)
-            .show();
+                .setTitle("サーバー再起動")
+                .setMessage("HTTPサーバーを再起動しますか？\n\nホスト: " + mCurrentSshHost + "\nポート: " + CLAUDE_SERVER_PORT)
+                .setPositiveButton("再起動", (dialog, which) -> {
+                    // Send restart command to terminal
+                    String command = "pkill -f claude-history-server.py; sleep 1; nohup python3 ~/.local/bin/claude-history-server.py > /dev/null 2>&1 &\n";
+                    byte[] data = command.getBytes();
+                    session.write(data, 0, data.length);
+                    showToast("サーバー再起動コマンドを送信しました", false);
+                })
+                .setNegativeButton("キャンセル", null)
+                .show();
     }
 
     /**
@@ -2372,7 +2421,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
      */
     private void connectToClaudeServer(String host) {
         showToast("サーバーに接続中...", false);
-        
+
         ClaudeHistoryHttpClient client = new ClaudeHistoryHttpClient(host, CLAUDE_SERVER_PORT);
         client.checkHealth(new ClaudeHistoryHttpClient.HealthCallback() {
             @Override
@@ -2380,79 +2429,79 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                 showToast("接続成功!", false);
                 showHttpServerOptionsDialog(client, cwd);
             }
-            
+
             @Override
             public void onError(String message) {
                 showToast("接続エラー: " + message, true);
             }
         });
     }
-    
+
     /**
      * Connect to HTTP server and show options.
      */
     private void connectToHttpServer(String host, int port) {
         showToast("サーバーに接続中...", false);
-        
+
         ClaudeHistoryHttpClient client = new ClaudeHistoryHttpClient(host, port);
         client.checkHealth(new ClaudeHistoryHttpClient.HealthCallback() {
             @Override
             public void onSuccess(String cwd) {
                 showHttpServerOptionsDialog(client, cwd);
             }
-            
+
             @Override
             public void onError(String message) {
                 showToast("接続エラー: " + message, true);
             }
         });
     }
-    
+
     /**
      * Show options after connecting to HTTP server.
      */
     private void showHttpServerOptionsDialog(ClaudeHistoryHttpClient client, String serverCwd) {
         new AlertDialog.Builder(this)
-            .setTitle("HTTP接続成功\n" + serverCwd)
-            .setItems(new String[] {
-                "🚀 最新ファイルをダウンロード",
-                "📋 ファイル一覧を表示"
-            }, (dialog, which) -> {
-                if (which == 0) {
-                    downloadLatestViaHttp(client);
-                } else {
-                    listFilesViaHttp(client);
-                }
-            })
-            .setNegativeButton("キャンセル", null)
-            .show();
+                .setTitle("HTTP接続成功\n" + serverCwd)
+                .setItems(new String[] {
+                        "🚀 最新ファイルをダウンロード",
+                        "📋 ファイル一覧を表示"
+                }, (dialog, which) -> {
+                    if (which == 0) {
+                        downloadLatestViaHttp(client);
+                    } else {
+                        listFilesViaHttp(client);
+                    }
+                })
+                .setNegativeButton("キャンセル", null)
+                .show();
     }
-    
+
     /**
      * Download latest file via HTTP.
      */
     private void downloadLatestViaHttp(ClaudeHistoryHttpClient client) {
         showToast("最新ファイルをダウンロード中...", false);
-        
+
         client.downloadLatest(new ClaudeHistoryHttpClient.DownloadCallback() {
             @Override
             public void onSuccess(String localPath) {
                 showToast("ダウンロード完了!", false);
             }
-            
+
             @Override
             public void onError(String message) {
                 showToast("エラー: " + message, true);
             }
         });
     }
-    
+
     /**
      * List files via HTTP and show selection dialog.
      */
     private void listFilesViaHttp(ClaudeHistoryHttpClient client) {
         showToast("ファイル一覧を取得中...", false);
-        
+
         client.listCurrentFiles(new ClaudeHistoryHttpClient.FileListCallback() {
             @Override
             public void onSuccess(String cwd, String project, List<ClaudeHistoryHttpClient.RemoteFile> files) {
@@ -2462,45 +2511,46 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                 }
                 showHttpFileListDialog(client, files);
             }
-            
+
             @Override
             public void onError(String message) {
                 showToast("エラー: " + message, true);
             }
         });
     }
-    
+
     /**
      * Show file list dialog for HTTP downloads.
      */
-    private void showHttpFileListDialog(ClaudeHistoryHttpClient client, List<ClaudeHistoryHttpClient.RemoteFile> files) {
+    private void showHttpFileListDialog(ClaudeHistoryHttpClient client,
+            List<ClaudeHistoryHttpClient.RemoteFile> files) {
         String[] fileNames = new String[files.size()];
         for (int i = 0; i < files.size(); i++) {
             fileNames[i] = "💬 " + files.get(i).displayName;
         }
-        
+
         new AlertDialog.Builder(this)
-            .setTitle("会話ファイル (" + files.size() + "件)")
-            .setItems(fileNames, (dialog, which) -> {
-                ClaudeHistoryHttpClient.RemoteFile selected = files.get(which);
-                downloadFileViaHttp(client, selected);
-            })
-            .setNegativeButton("キャンセル", null)
-            .show();
+                .setTitle("会話ファイル (" + files.size() + "件)")
+                .setItems(fileNames, (dialog, which) -> {
+                    ClaudeHistoryHttpClient.RemoteFile selected = files.get(which);
+                    downloadFileViaHttp(client, selected);
+                })
+                .setNegativeButton("キャンセル", null)
+                .show();
     }
-    
+
     /**
      * Download specific file via HTTP.
      */
     private void downloadFileViaHttp(ClaudeHistoryHttpClient client, ClaudeHistoryHttpClient.RemoteFile file) {
         showToast("ダウンロード中: " + file.name, false);
-        
+
         client.downloadFile(file, new ClaudeHistoryHttpClient.DownloadCallback() {
             @Override
             public void onSuccess(String localPath) {
                 showToast("ダウンロード完了!", false);
             }
-            
+
             @Override
             public void onError(String message) {
                 showToast("エラー: " + message, true);
@@ -2555,19 +2605,16 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                 .show();
     }
 
-
-
-
     private void showArControllerDialog(ArTextPager pager) {
         try {
             if (pager == null || pager.getTotalPages() == 0) {
                 showToast("表示するコンテンツがありません", true);
                 return;
             }
-            
+
             // mCurrentArPagerを保持（再オープン可能にするため）
             mCurrentArPager = pager;
-            
+
             AlertDialog.Builder builder = new AlertDialog.Builder(this);
             builder.setTitle("AR View (" + pager.getCurrentPageNum() + "/" + pager.getTotalPages() + ")");
 
@@ -2613,7 +2660,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             android.util.Log.e("TermuxActivity", "showArControllerDialog error", e);
         }
     }
-    
+
     /**
      * Opens AR View dialog if mCurrentArPager is available.
      * Can be called from menu or other places to reopen the dialog.
@@ -2623,19 +2670,19 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             showToast("AR Viewが利用できません。まずClaude→AR自動同期を使用してください。", true);
             return;
         }
-        
+
         if (!EvenG1Manager.getInstance().isConnected()) {
             showToast("ARグラスが接続されていません", true);
             return;
         }
-        
+
         // Send current page and show dialog
         mCurrentArPager.sendCurrentPage(new EvenG1Protocol.TextSendCallback() {
             @Override
             public void onSuccess() {
                 runOnUiThread(() -> showArControllerDialog(mCurrentArPager));
             }
-            
+
             @Override
             public void onFailure(@NonNull String error) {
                 runOnUiThread(() -> showToast("送信失敗: " + error, true));

@@ -30,7 +30,8 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * Manages custom commands and folders storage and retrieval using SharedPreferences.
+ * Manages custom commands and folders storage and retrieval using
+ * SharedPreferences.
  * Supports folder organization and import/export functionality.
  */
 public class CustomCommandManager {
@@ -100,7 +101,9 @@ public class CustomCommandManager {
 
     /**
      * Delete a folder and optionally its commands.
-     * @param deleteCommands If true, delete all commands in the folder. If false, move them to root.
+     * 
+     * @param deleteCommands If true, delete all commands in the folder. If false,
+     *                       move them to root.
      */
     public void deleteFolder(String id, boolean deleteCommands) {
         List<CommandFolder> folders = getAllFolders();
@@ -271,7 +274,7 @@ public class CustomCommandManager {
     public void reorderCommands(int fromIndex, int toIndex) {
         List<CustomCommand> commands = getAllCommands();
         if (fromIndex < 0 || fromIndex >= commands.size() ||
-            toIndex < 0 || toIndex >= commands.size()) {
+                toIndex < 0 || toIndex >= commands.size()) {
             return;
         }
         CustomCommand cmd = commands.remove(fromIndex);
@@ -390,8 +393,10 @@ public class CustomCommandManager {
 
     /**
      * Import data with the specified mode.
+     * 
      * @param data The parsed import data
-     * @param mode Import mode: MERGE (add new only), REPLACE (overwrite duplicates), or CLEAR_AND_IMPORT (clear all first)
+     * @param mode Import mode: MERGE (add new only), REPLACE (overwrite
+     *             duplicates), or CLEAR_AND_IMPORT (clear all first)
      */
     public ImportResult importData(ImportData data, ImportMode mode) {
         int foldersAdded = 0;
@@ -454,7 +459,8 @@ public class CustomCommandManager {
                 // New command - generate new ID
                 String newId = UUID.randomUUID().toString();
                 int maxOrder = existingCommands.stream().mapToInt(CustomCommand::getOrder).max().orElse(-1);
-                existingCommands.add(new CustomCommand(newId, importCmd.getName(), importCmd.getCommand(), mappedFolderId, maxOrder + 1));
+                existingCommands.add(new CustomCommand(newId, importCmd.getName(), importCmd.getCommand(),
+                        mappedFolderId, maxOrder + 1));
                 commandsAdded++;
             }
         }
@@ -488,8 +494,8 @@ public class CustomCommandManager {
     // ==================== Import Helper Classes ====================
 
     public enum ImportMode {
-        MERGE,           // Add new items only, skip duplicates
-        REPLACE,         // Add new items and overwrite duplicates
+        MERGE, // Add new items only, skip duplicates
+        REPLACE, // Add new items and overwrite duplicates
         CLEAR_AND_IMPORT // Clear all existing data and import
     }
 
@@ -522,8 +528,56 @@ public class CustomCommandManager {
         @Override
         public String toString() {
             return String.format(Locale.US,
-                "フォルダ: %d追加, %dスキップ\nコマンド: %d追加, %d更新",
-                foldersAdded, foldersUpdated, commandsAdded, commandsUpdated);
+                    "フォルダ: %d追加, %dスキップ\nコマンド: %d追加, %d更新",
+                    foldersAdded, foldersUpdated, commandsAdded, commandsUpdated);
+        }
+    }
+
+    /**
+     * Ensures that default AI agent commands exist.
+     */
+    public void ensureDefaultCommands() {
+        String folderName = "AI Agents";
+        CommandFolder folder = findFolderByName(getAllFolders(), folderName);
+
+        if (folder == null) {
+            folder = createFolder(folderName);
+        }
+
+        String folderId = folder.getId();
+        List<CustomCommand> existingCommands = getCommandsInFolder(folderId);
+
+        // Define default commands
+        // CC: claude
+        // CA: cursor-agent
+        // CD: codex
+        // CZ: claudez
+        String[][] defaults = {
+                { "CC", "claude" },
+                { "CC -r", "claude -r" },
+                { "CA", "cursor-agent" },
+                { "CA -r", "cursor-agent --resume" },
+                { "CD", "codex" },
+                { "CD -r", "codex resume" },
+                { "CZ", "claudez" },
+                { "CZ -r", "claudez -r" }
+        };
+
+        for (String[] def : defaults) {
+            String name = def[0];
+            String command = def[1];
+
+            boolean exists = false;
+            for (CustomCommand cmd : existingCommands) {
+                if (cmd.getName().equals(name)) {
+                    exists = true;
+                    break;
+                }
+            }
+
+            if (!exists) {
+                saveCommand(name, command, folderId);
+            }
         }
     }
 }
