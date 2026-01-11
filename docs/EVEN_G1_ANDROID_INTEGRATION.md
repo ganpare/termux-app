@@ -1234,6 +1234,91 @@ adb logcat | grep -E "EvenG1|BluetoothGatt"
 
 ---
 
+## 8. 応用: バックグラウンド制御とメディアボタン連携
+
+ARグラスの操作は、スマートフォンをポケットに入れた状態（バックグラウンド）で行えると非常に便利です。
+ここでは、Androidの**メディアセッション（MediaSession）**と**Bluetoothメディアリモコン**（またはイヤホンのボタン）を利用して、バックグラウンドからAR表示を制御する高度なテクニックを紹介します。
+
+### 仕組みの概要
+
+1.  **無音再生 (`SilentAudioPlayer`)**:
+    *   Android OSは「現在音を出しているアプリ」を優先的にメディアボタンの送信先に選びます。
+    *   ごく短い無音のオーディオトラックをループ再生し、`AudioFocus`を取得し続けることで、他の音楽アプリ（Spotify等）に割り込まれることなくボタンイベントを独占します。
+2.  **メディアセッション (`MediaSessionCompat`)**:
+    *   `KEYCODE_MEDIA_NEXT` (次へ) や `KEYCODE_MEDIA_PREVIOUS` (前へ) といったシステムイベントをフックします。
+    *   これらのイベントをアプリケーション内のロジック（ARページ送りなど）に転送します。
+
+### 実装例
+
+#### 1. SilentAudioPlayer (無音再生)
+
+```java
+public class SilentAudioPlayer {
+    private AudioTrack mAudioTrack;
+    private volatile boolean mIsPlaying = false;
+
+    public void play() {
+        // 1. AudioFocusを要求（重要）
+        AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+        am.requestAudioFocus(focusChangeListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
+
+        // 2. 無音データの生成と再生
+        int bufferSize = AudioTrack.getMinBufferSize(44100, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
+        mAudioTrack = new AudioTrack(..., AudioTrack.MODE_STREAM);
+        mAudioTrack.play();
+        
+        // 3. 別スレッドで無音(0)を書き込み続ける
+        new Thread(() -> {
+            byte[] silence = new byte[bufferSize];
+            while (mIsPlaying) {
+                mAudioTrack.write(silence, 0, silence.length);
+            }
+        }).start();
+    }
+}
+```
+
+#### 2. MediaControlManager (イベント監視)
+
+```java
+public class MediaControlManager {
+    private MediaSessionCompat mMediaSession;
+
+    public void start(Callback callback) {
+        // 1. セッション作成
+        mMediaSession = new MediaSessionCompat(context, "AR_Control_Session");
+        
+        // 2. コールバックの設定
+        mMediaSession.setCallback(new MediaSessionCompat.Callback() {
+            @Override
+            public void onSkipToNext() {
+                // "次へ"ボタン押下時の処理
+                callback.onNextPage();
+            }
+
+            @Override
+            public void onSkipToPrevious() {
+                // "前へ"ボタン押下時の処理
+                callback.onPrevPage();
+            }
+        });
+
+        // 3. セッション有効化
+        mMediaSession.setFlags(MediaSessionCompat.FLAG_HANDLES_MEDIA_BUTTONS | 
+                               MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS);
+        mMediaSession.setActive(true);
+        
+        // 4. 無音再生開始（OSに認識させるため）
+        silentAudioPlayer.play();
+    }
+}
+```
+
+この構成により、ユーザーはスマホ画面を見ることなく、手元のBluetoothリモコンだけでARグラス上の情報を操作可能になります。
+```
+
+---
+
 ## ライセンス
 
 このドキュメントのコード例は、EVEN G1との互換性を持つアプリケーション開発に自由に使用できます。
