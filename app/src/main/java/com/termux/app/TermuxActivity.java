@@ -60,6 +60,7 @@ import com.termux.app.eveng1.EvenG1DevicePair;
 import com.termux.app.eveng1.ArTextPager;
 import com.termux.app.eveng1.EvenG1Protocol;
 import com.termux.app.claude.ClaudeChatParser;
+import com.termux.app.media.MediaControlManager;
 import com.termux.app.terminal.TermuxActivityRootView;
 import com.termux.app.terminal.TermuxTerminalSessionActivityClient;
 import com.termux.app.terminal.io.TermuxTerminalExtraKeys;
@@ -409,6 +410,8 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             mCustomCommandManager = new CustomCommandManager(this);
         }
         mCustomCommandManager.ensureDefaultCommands();
+
+        mMediaControlManager = new MediaControlManager(this);
     }
 
     @Override
@@ -2252,6 +2255,8 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
 
     // AutoArSyncManager instance
     private AutoArSyncManager mAutoArSyncManager;
+    private MediaControlManager mMediaControlManager; // For media button control
+    private AlertDialog mActiveArDialog; // Track active AR dialog
 
     /**
      * Shows dialog for automatic AR sync.
@@ -2615,6 +2620,33 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             // mCurrentArPagerを保持（再オープン可能にするため）
             mCurrentArPager = pager;
 
+            // Start Media Session for background control
+            mMediaControlManager.start(new MediaControlManager.MediaControlCallback() {
+                @Override
+                public void onNext() {
+                    runOnUiThread(() -> {
+                        try {
+                            pager.nextPage(null);
+                            updateArDialogUI(mActiveArDialog, pager);
+                        } catch (Exception e) {
+                            showToast("次ページエラー: " + e.getMessage(), true);
+                        }
+                    });
+                }
+
+                @Override
+                public void onPrevious() {
+                    runOnUiThread(() -> {
+                        try {
+                            pager.prevPage(null);
+                            updateArDialogUI(mActiveArDialog, pager);
+                        } catch (Exception e) {
+                            showToast("前ページエラー: " + e.getMessage(), true);
+                        }
+                    });
+                }
+            });
+
             AlertDialog.Builder builder = new AlertDialog.Builder(this);
             builder.setTitle("AR View (" + pager.getCurrentPageNum() + "/" + pager.getTotalPages() + ")");
 
@@ -2626,20 +2658,24 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             builder.setPositiveButton("次へ", null);
             builder.setNegativeButton("前へ", null);
             builder.setNeutralButton("閉じる", (dialog, which) -> {
-                // 閉じる時もmCurrentArPagerを保持（再オープン可能にするため）
+                // Media session stopped by dismiss listener
                 dialog.dismiss();
             });
 
+            builder.setOnDismissListener(dialog -> {
+                mMediaControlManager.stop();
+                mActiveArDialog = null;
+            });
+
             AlertDialog dialog = builder.create();
+            mActiveArDialog = dialog; // Keep reference
             dialog.show();
 
             // Override onClickListeners to prevent dismiss
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
                 try {
                     pager.nextPage(null);
-                    dialog.setTitle("AR View (" + pager.getCurrentPageNum() + "/" + pager.getTotalPages() + ")");
-                    // Update message with new page text
-                    dialog.setMessage("現在の表示:\n\n" + pager.getCurrentPageText());
+                    updateArDialogUI(dialog, pager);
                 } catch (Exception e) {
                     showToast("次ページエラー: " + e.getMessage(), true);
                 }
@@ -2648,9 +2684,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener(v -> {
                 try {
                     pager.prevPage(null);
-                    dialog.setTitle("AR View (" + pager.getCurrentPageNum() + "/" + pager.getTotalPages() + ")");
-                    // Update message with new page text
-                    dialog.setMessage("現在の表示:\n\n" + pager.getCurrentPageText());
+                    updateArDialogUI(dialog, pager);
                 } catch (Exception e) {
                     showToast("前ページエラー: " + e.getMessage(), true);
                 }
@@ -2659,6 +2693,13 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             showToast("ARダイアログエラー: " + e.getMessage(), true);
             android.util.Log.e("TermuxActivity", "showArControllerDialog error", e);
         }
+    }
+
+    private void updateArDialogUI(AlertDialog dialog, ArTextPager pager) {
+        if (dialog == null || !dialog.isShowing())
+            return;
+        dialog.setTitle("AR View (" + pager.getCurrentPageNum() + "/" + pager.getTotalPages() + ")");
+        dialog.setMessage("現在の表示:\n\n" + pager.getCurrentPageText());
     }
 
     /**

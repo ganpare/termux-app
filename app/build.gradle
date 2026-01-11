@@ -38,6 +38,7 @@ android {
 
         implementation project(":terminal-view")
         implementation project(":termux-shared")
+        implementation "androidx.media:media:1.7.0"
     }
 
     defaultConfig {
