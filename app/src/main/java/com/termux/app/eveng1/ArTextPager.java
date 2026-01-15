@@ -31,7 +31,8 @@ public class ArTextPager {
 
     /**
      * Splits text into pages based on actual display width using Paint measurement.
-     * Each page contains at most 5 lines, with each line fitting within 488px width.
+     * Each page contains at most 5 lines, with each line fitting within 488px
+     * width.
      */
     private List<String> splitText(String text) {
         List<String> pages = new ArrayList<>();
@@ -42,15 +43,15 @@ public class ArTextPager {
         // Paint設定: フォントサイズ21、画面幅488px
         Paint paint = new Paint();
         paint.setTextSize(FONT_SIZE);
-        
+
         // 1. テキストを行に分割
         List<String> lines = splitTextIntoLines(text, paint, MAX_WIDTH_PX);
-        
+
         // 2. 5行ずつページに分割
         for (int i = 0; i < lines.size(); i += LINES_PER_PAGE) {
             int end = Math.min(i + LINES_PER_PAGE, lines.size());
             List<String> pageLines = lines.subList(i, end);
-            
+
             // 各行を改行で結合
             StringBuilder pageBuilder = new StringBuilder();
             for (int j = 0; j < pageLines.size(); j++) {
@@ -61,26 +62,24 @@ public class ArTextPager {
             }
             String pageText = pageBuilder.toString();
             pages.add(pageText);
-            
+
             // デバッグログ: 各ページの情報を出力
             float pageWidth = paint.measureText(pageText);
             android.util.Log.d("ArTextPager", String.format(
-                "Page %d: %d lines, %d chars, width: %.1fpx (max: %.1fpx)",
-                pages.size(), pageLines.size(), pageText.length(), pageWidth, MAX_WIDTH_PX
-            ));
-            
+                    "Page %d: %d lines, %d chars, width: %.1fpx (max: %.1fpx)",
+                    pages.size(), pageLines.size(), pageText.length(), pageWidth, MAX_WIDTH_PX));
+
             // 各行の詳細もログ出力
             for (int j = 0; j < pageLines.size(); j++) {
                 String line = pageLines.get(j);
                 float lineWidth = paint.measureText(line);
                 android.util.Log.d("ArTextPager", String.format(
-                    "  Line %d: %d chars, width: %.1fpx - \"%s\"",
-                    j + 1, line.length(), lineWidth,
-                    line.length() > 30 ? line.substring(0, 30) + "..." : line
-                ));
+                        "  Line %d: %d chars, width: %.1fpx - \"%s\"",
+                        j + 1, line.length(), lineWidth,
+                        line.length() > 30 ? line.substring(0, 30) + "..." : line));
             }
         }
-        
+
         return pages;
     }
 
@@ -90,7 +89,7 @@ public class ArTextPager {
      */
     private List<String> splitTextIntoLines(String text, Paint paint, float maxWidthPx) {
         List<String> lines = new ArrayList<>();
-        
+
         // 段落ごとに処理（元の改行を保持）
         String[] paragraphs = text.split("\n", -1);
         for (String paragraph : paragraphs) {
@@ -98,7 +97,7 @@ public class ArTextPager {
                 lines.add("");
                 continue;
             }
-            
+
             String remaining = paragraph.trim();
             while (!remaining.isEmpty()) {
                 // 1行に収まる文字数を計算
@@ -118,7 +117,7 @@ public class ArTextPager {
                 }
             }
         }
-        
+
         return lines;
     }
 
@@ -142,13 +141,16 @@ public class ArTextPager {
         int maxPage = pages.size();
 
         // Use empty callback if null to avoid NullPointerException
-        EvenG1Protocol.TextSendCallback safeCallback = callback != null ? callback : 
-            new EvenG1Protocol.TextSendCallback() {
-                @Override
-                public void onSuccess() {}
-                @Override
-                public void onFailure(String error) {}
-            };
+        EvenG1Protocol.TextSendCallback safeCallback = callback != null ? callback
+                : new EvenG1Protocol.TextSendCallback() {
+                    @Override
+                    public void onSuccess() {
+                    }
+
+                    @Override
+                    public void onFailure(String error) {
+                    }
+                };
 
         EvenG1Protocol.sendText(
                 manager,
@@ -195,5 +197,17 @@ public class ArTextPager {
             return "";
         }
         return pages.get(currentPageIndex);
+    }
+
+    /**
+     * Updates the text content and refreshes the pager.
+     * Resets to first page to ensure visibility of new status.
+     * 
+     * @param newText The new text content to display.
+     */
+    public void updateText(String newText) {
+        this.pages.clear();
+        this.pages.addAll(splitText(newText));
+        this.currentPageIndex = 0; // Always reset to start for new content
     }
 }

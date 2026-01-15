@@ -17,18 +17,26 @@ import java.util.List;
  */
 public class ClaudeChatParser {
 
+    public static class AgentComment {
+        public String text;
+        public String stopReason;
+
+        public AgentComment(String text, String stopReason) {
+            this.text = text;
+            this.stopReason = stopReason;
+        }
+    }
+
     /**
      * Extracts all text comments made by the assistant (Claude) from the given
      * JSONL file.
      * Use this to get the "voice" of the agent without tool execution logs.
      *
      * @param filePath The absolute path to the local .jsonl file.
-     * @return A list of strings, where each string is a text comment from the
-     *         assistant.
-     *         Returns an empty list if file not found or parsing fails.
+     * @return A list of AgentComment objects.
      */
-    public static List<String> getAgentComments(String filePath) {
-        List<String> comments = new ArrayList<>();
+    public static List<AgentComment> getAgentComments(String filePath) {
+        List<AgentComment> comments = new ArrayList<>();
         File file = new File(filePath);
 
         if (!file.exists()) {
@@ -36,11 +44,7 @@ public class ClaudeChatParser {
             return comments;
         }
 
-        android.util.Log.d("ClaudeChatParser", "Parsing file: " + filePath + " (size: " + file.length() + " bytes)");
-
         int totalLines = 0;
-        int assistantLines = 0;
-        int textBlocks = 0;
 
         try (BufferedReader br = new BufferedReader(new FileReader(file))) {
             String line;
@@ -58,47 +62,45 @@ public class ClaudeChatParser {
                         continue;
                     }
 
-                    assistantLines++;
-
                     if (!event.has("message")) {
-                        android.util.Log.d("ClaudeChatParser", "Assistant event missing 'message' field");
                         continue;
                     }
 
                     JSONObject message = event.getJSONObject("message");
+                    String stopReason = message.optString("stop_reason", "");
+
                     if (!message.has("content")) {
-                        android.util.Log.d("ClaudeChatParser", "Message missing 'content' field");
                         continue;
                     }
 
                     JSONArray contentArray = message.getJSONArray("content");
+                    StringBuilder sb = new StringBuilder();
+                    boolean hasText = false;
+
                     for (int i = 0; i < contentArray.length(); i++) {
                         JSONObject contentItem = contentArray.getJSONObject(i);
 
                         // Extract only text content, ignoring tool_use
                         if (contentItem.has("type") && contentItem.getString("type").equals("text")) {
-                            textBlocks++;
                             if (contentItem.has("text")) {
                                 String text = contentItem.getString("text");
-                                comments.add(text);
-                                android.util.Log.d("ClaudeChatParser", "Found text block #" + textBlocks + " (length: " + text.length() + ")");
+                                sb.append(text);
+                                hasText = true;
                             }
                         }
                     }
 
+                    if (hasText || !stopReason.isEmpty()) {
+                        comments.add(new AgentComment(sb.toString(), stopReason));
+                    }
+
                 } catch (JSONException e) {
-                    // Skip malformed lines
-                    android.util.Log.w("ClaudeChatParser", "Malformed JSON line " + totalLines + ": " + e.getMessage());
                     continue;
                 }
             }
         } catch (IOException e) {
-            android.util.Log.e("ClaudeChatParser", "IO Error: " + e.getMessage());
             e.printStackTrace();
         }
-
-        android.util.Log.i("ClaudeChatParser", "Parsing complete: " + totalLines + " total lines, " +
-            assistantLines + " assistant lines, " + textBlocks + " text blocks, " + comments.size() + " comments");
 
         return comments;
     }
@@ -108,10 +110,10 @@ public class ClaudeChatParser {
      * Returns null if no assistant comment is found.
      *
      * @param filePath The absolute path to the local .jsonl file.
-     * @return The latest assistant comment text, or null if not found.
+     * @return The latest assistant AgentComment, or null if not found.
      */
-    public static String getLatestAgentComment(String filePath) {
-        List<String> comments = getAgentComments(filePath);
+    public static AgentComment getLatestAgentComment(String filePath) {
+        List<AgentComment> comments = getAgentComments(filePath);
         if (comments.isEmpty()) {
             return null;
         }

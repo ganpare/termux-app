@@ -25,12 +25,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * Flow:
  * 1. User inputs query in dedicated input field
  * 2. On "Send→AR" button press:
- *    a. Get current latest file timestamp from HTTP server
- *    b. Send query to terminal
- *    c. Start polling (every 5 seconds)
- *    d. Show "考え中..." on AR glasses (moving position each poll)
- *    e. When timestamp changes → download new file → display on AR
- *    f. Timeout after 10 minutes
+ * a. Get current latest file timestamp from HTTP server
+ * b. Send query to terminal
+ * c. Start polling (every 5 seconds)
+ * d. Show "考え中..." on AR glasses (moving position each poll)
+ * e. When timestamp changes → download new file → display on AR
+ * f. Timeout after 10 minutes
  */
 public class AutoArSyncManager {
 
@@ -42,6 +42,7 @@ public class AutoArSyncManager {
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final AtomicBoolean isWatching = new AtomicBoolean(false);
+    private boolean hasDisplayedContent = false;
 
     private String serverHost;
     private int serverPort;
@@ -52,12 +53,12 @@ public class AutoArSyncManager {
 
     // Thinking animation frames
     private static final String[] THINKING_FRAMES = {
-        "考え中 .",
-        "考え中 ..",
-        "考え中 ...",
-        "考え中 ....",
-        "考え中 .....",
-        "考え中 ......",
+            "考え中 .",
+            "考え中 ..",
+            "考え中 ...",
+            "考え中 ....",
+            "考え中 .....",
+            "考え中 ......",
     };
 
     /**
@@ -65,11 +66,18 @@ public class AutoArSyncManager {
      */
     public interface SyncCallback {
         void onWatchStarted();
-        void onPolling(int count, int maxSeconds);
+
         void onFileChanged();
-        void onSyncComplete(String content);
-        void onTimeout();
+
+        void onStatusChanged(String status);
+
+        void onSyncComplete(String filePath, String content);
+
         void onError(String message);
+
+        void onTimeout();
+
+        void onPolling(int count, int maxSeconds);
     }
 
     public AutoArSyncManager(String host, int port) {
@@ -87,8 +95,8 @@ public class AutoArSyncManager {
     /**
      * Start watching for file changes and sync to AR.
      * 
-     * @param session Terminal session to send query to
-     * @param query Query text to send
+     * @param session  Terminal session to send query to
+     * @param query    Query text to send
      * @param callback Callback for sync events
      */
     public void startWatching(TerminalSession session, String query, SyncCallback callback) {
@@ -98,6 +106,8 @@ public class AutoArSyncManager {
         }
 
         isWatching.set(true);
+        isWatching.set(true);
+        hasDisplayedContent = false;
         pollCount = 0;
         watchStartTime = System.currentTimeMillis();
 
@@ -110,18 +120,23 @@ public class AutoArSyncManager {
                     isWatching.set(false);
                     return;
                 }
-                
+
                 initialMtime = info.getDouble("mtime");
-                
+
                 // Get initial latest assistant comment to compare later
                 ClaudeHistoryHttpClient client = new ClaudeHistoryHttpClient(serverHost, serverPort);
                 client.downloadLatest(new ClaudeHistoryHttpClient.DownloadCallback() {
                     @Override
                     public void onSuccess(String localPath) {
-                        initialLatestComment = ClaudeChatParser.getLatestAgentComment(localPath);
-                        android.util.Log.d("AutoArSync", "Initial latest comment: " + 
-                            (initialLatestComment != null ? initialLatestComment.substring(0, Math.min(50, initialLatestComment.length())) + "..." : "null"));
-                        
+                        ClaudeChatParser.AgentComment comment = ClaudeChatParser.getLatestAgentComment(localPath);
+                        initialLatestComment = comment != null ? comment.text : null;
+
+                        android.util.Log.d("AutoArSync", "Initial latest comment: " +
+                                (initialLatestComment != null
+                                        ? initialLatestComment.substring(0, Math.min(50, initialLatestComment.length()))
+                                                + "..."
+                                        : "null"));
+
                         // Step 2: Send query to terminal
                         mainHandler.post(() -> {
                             String fullQuery = query + "\n";
@@ -131,6 +146,7 @@ public class AutoArSyncManager {
                         });
 
                         // Step 3: Start polling
+                        callback.onStatusChanged("サーバー監視を開始します...");
                         pollForChanges(callback);
                     }
 
@@ -139,7 +155,7 @@ public class AutoArSyncManager {
                         // Even if we can't get initial comment, start polling anyway
                         android.util.Log.w("AutoArSync", "Failed to get initial comment: " + message);
                         initialLatestComment = null;
-                        
+
                         mainHandler.post(() -> {
                             String fullQuery = query + "\n";
                             byte[] data = fullQuery.getBytes();
@@ -165,6 +181,14 @@ public class AutoArSyncManager {
         isWatching.set(false);
     }
 
+    /**
+     * Notify that content has been displayed externally (e.g. manual AR view).
+     * This stops the "Thinking..." animation.
+     */
+    public void notifyContentDisplayed() {
+        this.hasDisplayedContent = true;
+    }
+
     private void pollForChanges(SyncCallback callback) {
         if (!isWatching.get()) {
             return;
@@ -180,13 +204,15 @@ public class AutoArSyncManager {
 
         pollCount++;
         int remainingSeconds = (int) ((MAX_POLL_TIME_MS - elapsed) / 1000);
-        
+
         // Notify polling progress
         final int currentPollCount = pollCount;
         mainHandler.post(() -> callback.onPolling(currentPollCount, remainingSeconds));
 
-        // Show thinking animation on AR
-        showThinkingOnAr(pollCount);
+        // Show thinking animation on AR (only if no content displayed yet)
+        if (!hasDisplayedContent) {
+            showThinkingOnAr(pollCount);
+        }
 
         executor.execute(() -> {
             try {
@@ -198,7 +224,7 @@ public class AutoArSyncManager {
                 }
 
                 double currentMtime = info.getDouble("mtime");
-                
+
                 if (currentMtime > initialMtime) {
                     // File changed! Check if assistant message actually changed
                     checkAndDisplayIfNew(callback);
@@ -217,7 +243,7 @@ public class AutoArSyncManager {
         if (!isWatching.get()) {
             return;
         }
-        
+
         mainHandler.postDelayed(() -> {
             executor.execute(() -> pollForChanges(callback));
         }, POLL_INTERVAL_MS);
@@ -230,25 +256,27 @@ public class AutoArSyncManager {
 
         // Cycle through animation frames
         String frame = THINKING_FRAMES[pollCount % THINKING_FRAMES.length];
-        
+
         // Use page number to show progress (1/120 = 5sec/10min)
         int maxPolls = MAX_POLL_TIME_MS / POLL_INTERVAL_MS;
         int pageNum = Math.min(pollCount, maxPolls);
 
         EvenG1Protocol.sendText(
-            EvenG1Manager.getInstance(),
-            frame,
-            mainHandler,
-            new EvenG1Protocol.TextSendCallback() {
-                @Override
-                public void onSuccess() {}
-                @Override
-                public void onFailure(String error) {}
-            },
-            EvenG1Constants.NEW_TEXT_SCREEN,
-            pageNum,
-            maxPolls
-        );
+                EvenG1Manager.getInstance(),
+                frame,
+                mainHandler,
+                new EvenG1Protocol.TextSendCallback() {
+                    @Override
+                    public void onSuccess() {
+                    }
+
+                    @Override
+                    public void onFailure(String error) {
+                    }
+                },
+                EvenG1Constants.NEW_TEXT_SCREEN,
+                pageNum,
+                maxPolls);
     }
 
     /**
@@ -263,24 +291,66 @@ public class AutoArSyncManager {
                     @Override
                     public void onSuccess(String localPath) {
                         // Get latest assistant comment
-                        String currentLatestComment = ClaudeChatParser.getLatestAgentComment(localPath);
-                        
-                        if (currentLatestComment == null) {
+                        ClaudeChatParser.AgentComment latestComment = ClaudeChatParser.getLatestAgentComment(localPath);
+                        String currentLatestText = latestComment != null ? latestComment.text : null;
+
+                        if (currentLatestText == null) {
                             // No assistant comment found, continue polling
                             android.util.Log.d("AutoArSync", "No assistant comment found, continuing to poll");
                             scheduleNextPoll(callback);
                             return;
                         }
-                        
+
                         // Compare with initial comment
-                        if (initialLatestComment == null || !currentLatestComment.equals(initialLatestComment)) {
+                        if (initialLatestComment == null) {
+                            // First successful fetch after failed initialization (or brand new chat).
+                            // Assume this is the baseline and do NOT display yet to avoid showing old chat.
+                            android.util.Log.d("AutoArSync", "Initializing baseline comment: " +
+                                    (currentLatestText != null
+                                            ? currentLatestText.substring(0, Math.min(20, currentLatestText.length()))
+                                            : "null"));
+                            initialLatestComment = currentLatestText;
+
+                            // Continue polling for actual new changes
+                            scheduleNextPoll(callback);
+                            return;
+                        }
+
+                        if (!currentLatestText.equals(initialLatestComment)) {
                             // Assistant message has changed!
-                            android.util.Log.d("AutoArSync", "Assistant message changed! Displaying...");
-                            isWatching.set(false);
-                            mainHandler.post(callback::onFileChanged);
-                            
-                            // Display on AR
-                            displayOnAr(currentLatestComment, callback);
+                            android.util.Log.d("AutoArSync", "Assistant message changed!");
+
+                            // Check stop reason
+                            boolean isFinal = "end_turn".equals(latestComment.stopReason);
+                            boolean isEmpty = currentLatestText.trim().isEmpty();
+
+                            if (!isEmpty) {
+                                hasDisplayedContent = true;
+                            } else {
+                                android.util.Log.d("AutoArSync", "New message is empty");
+                            }
+
+                            if (isFinal) {
+                                isWatching.set(false);
+                                mainHandler.post(callback::onFileChanged); // Notify finish
+                            } else {
+                                // Update tracker and continue polling
+                                initialLatestComment = currentLatestText;
+                                // Update initialMtime
+                                try {
+                                    JSONObject info = fetchLatestInfo();
+                                    if (info != null) {
+                                        initialMtime = info.getDouble("mtime");
+                                    }
+                                } catch (Exception e) {
+                                }
+
+                                // Notify about update so we can sync to Turso
+                                mainHandler.post(() -> callback.onSyncComplete(localPath, currentLatestText));
+
+                                scheduleNextPoll(callback);
+                            }
+
                         } else {
                             // Assistant message hasn't changed (probably just user message added)
                             android.util.Log.d("AutoArSync", "Assistant message unchanged, continuing to poll");
@@ -312,7 +382,7 @@ public class AutoArSyncManager {
         });
     }
 
-    private void downloadAndDisplay(SyncCallback callback) {
+    public void downloadAndDisplay(SyncCallback callback) {
         executor.execute(() -> {
             try {
                 // Download latest file
@@ -321,16 +391,17 @@ public class AutoArSyncManager {
                     @Override
                     public void onSuccess(String localPath) {
                         // Parse and get latest comment
-                        List<String> comments = ClaudeChatParser.getAgentComments(localPath);
+                        List<ClaudeChatParser.AgentComment> comments = ClaudeChatParser.getAgentComments(localPath);
                         if (comments.isEmpty()) {
                             postError(callback, "コメントが見つかりません");
                             return;
                         }
 
-                        String latestComment = comments.get(comments.size() - 1);
-                        
-                        // Display on AR
-                        displayOnAr(latestComment, callback);
+                        ClaudeChatParser.AgentComment latestComment = comments.get(comments.size() - 1);
+
+                        // Notify sync complete (TermuxActivity will handle sync to Turso and AR
+                        // display)
+                        mainHandler.post(() -> callback.onSyncComplete(localPath, latestComment.text));
                     }
 
                     @Override
@@ -344,7 +415,7 @@ public class AutoArSyncManager {
         });
     }
 
-    private void displayOnAr(String content, SyncCallback callback) {
+    private void displayOnAr(String localPath, String content, SyncCallback callback) {
         if (!EvenG1Manager.getInstance().isConnected()) {
             postError(callback, "ARグラスが接続されていません");
             return;
@@ -352,21 +423,21 @@ public class AutoArSyncManager {
 
         // Create pager and display
         com.termux.app.eveng1.ArTextPager pager = new com.termux.app.eveng1.ArTextPager(
-            EvenG1Manager.getInstance(),
-            mainHandler,
-            content
-        );
+                EvenG1Manager.getInstance(),
+                mainHandler,
+                content);
 
         pager.sendCurrentPage(new EvenG1Protocol.TextSendCallback() {
             @Override
             public void onSuccess() {
-                mainHandler.post(() -> callback.onSyncComplete(content));
+                mainHandler.post(() -> callback.onSyncComplete(localPath, content));
             }
 
             @Override
             public void onFailure(String error) {
                 postError(callback, "AR送信エラー: " + error);
             }
+
         });
     }
 
@@ -385,7 +456,7 @@ public class AutoArSyncManager {
                 }
 
                 BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(conn.getInputStream()));
+                        new InputStreamReader(conn.getInputStream()));
                 StringBuilder sb = new StringBuilder();
                 String line;
                 while ((line = reader.readLine()) != null) {

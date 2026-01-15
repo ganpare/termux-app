@@ -560,7 +560,13 @@ public class CustomCommandManager {
                 { "CD", "codex" },
                 { "CD -r", "codex resume" },
                 { "CZ", "claudez" },
-                { "CZ -r", "claudez -r" }
+                { "CZ -r", "claudez -r" },
+                { "CC-skip", "claude --dangerously-skip-permissions" },
+                { "CC-skip -r", "claude --dangerously-skip-permissions -r" },
+                { "CD-bypass", "codex --dangerously-bypass-approvals-and-sandbox" },
+                { "CD-bypass -r", "codex --dangerously-bypass-approvals-and-sandbox resume" },
+                { "CZ-skip", "claudez --dangerously-skip-permissions" },
+                { "CZ-skip -r", "claudez --dangerously-skip-permissions -r" }
         };
 
         for (String[] def : defaults) {

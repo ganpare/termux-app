@@ -61,6 +61,9 @@ import com.termux.app.eveng1.ArTextPager;
 import com.termux.app.eveng1.EvenG1Protocol;
 import com.termux.app.claude.ClaudeChatParser;
 import com.termux.app.media.MediaControlManager;
+import com.termux.app.ai.AiSettingsManager;
+import com.termux.app.turso.TursoSyncManager;
+import com.termux.app.ai.LlmClient;
 import com.termux.app.terminal.TermuxActivityRootView;
 import com.termux.app.terminal.TermuxTerminalSessionActivityClient;
 import com.termux.app.terminal.io.TermuxTerminalExtraKeys;
@@ -162,6 +165,16 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     private ActivityResultLauncher<String[]> mImportLauncher;
 
     /**
+     * Activity result launcher for exporting AI prompt templates.
+     */
+    private ActivityResultLauncher<String> mAiTemplateExportLauncher;
+
+    /**
+     * Activity result launcher for importing AI prompt templates.
+     */
+    private ActivityResultLauncher<String[]> mAiTemplateImportLauncher;
+
+    /**
      * Activity result launcher for selecting Claude history JSONL file.
      */
     private ActivityResultLauncher<String[]> mClaudeHistoryLauncher;
@@ -247,8 +260,14 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     private boolean mIsInvalidState;
 
     private int mNavBarHeight;
-
     private float mTerminalToolbarDefaultHeight;
+
+    private long mLastToastTime = 0;
+    private final long TOAST_COOLDOWN_MS = 2000;
+
+    // Conversation History Navigation
+    private java.util.List<String> mCurrentConversationHistory = null;
+    private int mCurrentHistoryIndex = -1;
 
     private static final int CONTEXT_MENU_SELECT_URL_ID = 0;
     private static final int CONTEXT_MENU_SHARE_TRANSCRIPT_ID = 1;
@@ -259,9 +278,10 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     private static final int CONTEXT_MENU_KILL_PROCESS_ID = 4;
     private static final int CONTEXT_MENU_STYLING_ID = 5;
     private static final int CONTEXT_MENU_TOGGLE_KEEP_SCREEN_ON = 6;
-    private static final int CONTEXT_MENU_HELP_ID = 7;
-    private static final int CONTEXT_MENU_SETTINGS_ID = 8;
-    private static final int CONTEXT_MENU_REPORT_ID = 9;
+    private static final int CONTEXT_MENU_AI_ASSISTANT_ID = 20;
+    private static final int CONTEXT_MENU_HELP_ID = 21;
+    private static final int CONTEXT_MENU_SETTINGS_ID = 22;
+    private static final int CONTEXT_MENU_REPORT_ID = 23;
 
     private static final String ARG_TERMINAL_TOOLBAR_TEXT_INPUT = "terminal_toolbar_text_input";
     private static final String ARG_ACTIVITY_RECREATED = "activity_recreated";
@@ -348,6 +368,9 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         // Set Claude conversation sync button
         setClaudeSyncButton();
 
+        // Set AI Assistant button
+        setAiAssistantButton();
+
         // Set EVEN G1 AR Glasses buttons
         setEvenG1Buttons();
 
@@ -412,6 +435,11 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         mCustomCommandManager.ensureDefaultCommands();
 
         mMediaControlManager = new MediaControlManager(this);
+
+        mAiSettingsManager = new AiSettingsManager(this);
+        mLlmClient = new LlmClient(mAiSettingsManager.getBaseUrlForProvider(mAiSettingsManager.getProvider()));
+        mTursoSyncManager = new TursoSyncManager(this);
+        mTursoSyncManager.initializeDb(null);
     }
 
     @Override
@@ -1080,6 +1108,33 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                     }
                 });
 
+        // AI prompt template export launcher
+        mAiTemplateExportLauncher = registerForActivityResult(
+                new ActivityResultContracts.CreateDocument(),
+                uri -> {
+                    if (uri != null) {
+                        try {
+                            OutputStream outputStream = getContentResolver().openOutputStream(uri);
+                            if (outputStream != null) {
+                                new AiSettingsManager(this).exportTemplatesToFile(outputStream);
+                                outputStream.close();
+                                showToast("テンプレートをエクスポートしました", false);
+                            }
+                        } catch (Exception e) {
+                            showToast("テンプレートのエクスポート失敗: " + e.getMessage(), true);
+                        }
+                    }
+                });
+
+        // AI prompt template import launcher
+        mAiTemplateImportLauncher = registerForActivityResult(
+                new ActivityResultContracts.OpenDocument(),
+                uri -> {
+                    if (uri != null) {
+                        handleAiTemplateImportFile(uri);
+                    }
+                });
+
         // Claude history launcher - opens JSONL files for AR display
         mClaudeHistoryLauncher = registerForActivityResult(
                 new ActivityResultContracts.OpenDocument(),
@@ -1525,6 +1580,42 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     }
 
     /**
+     * Test Turso connection and initialize database schema.
+     */
+    public void testTursoConnection(String url, String token) {
+        showToast("接続テスト中...", false);
+        new Thread(() -> {
+            try {
+                // Initialize a temporary manager to test connection
+                final com.termux.app.turso.TursoSyncManager tempManager = new com.termux.app.turso.TursoSyncManager(url,
+                        token);
+                tempManager.initializeDb(null);
+                runOnUiThread(() -> {
+                    showToast("接続成功: テーブル作成完了", false);
+                    mTursoSyncManager = tempManager; // Use this valid manager
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> showToast("接続エラー: " + e.getMessage(), true));
+            }
+        }).start();
+    }
+
+    /**
+     * Export AI prompt templates to a JSON file.
+     */
+    public void exportAiTemplates() {
+        String filename = "termux_ai_templates_" + System.currentTimeMillis() + ".json";
+        mAiTemplateExportLauncher.launch(filename);
+    }
+
+    /**
+     * Import AI prompt templates from a JSON file.
+     */
+    public void importAiTemplates() {
+        mAiTemplateImportLauncher.launch(new String[] { "application/json", "*/*" });
+    }
+
+    /**
      * Handle imported file.
      */
     private void handleImportFile(Uri uri) {
@@ -1542,6 +1633,27 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             showImportOptionsDialog(data);
         } catch (Exception e) {
             showToast("インポート失敗: " + e.getMessage(), true);
+        }
+    }
+
+    /**
+     * Handle imported AI prompt template file.
+     */
+    private void handleAiTemplateImportFile(Uri uri) {
+        try {
+            InputStream inputStream = getContentResolver().openInputStream(uri);
+            if (inputStream == null) {
+                showToast("ファイルを開けませんでした", true);
+                return;
+            }
+
+            AiSettingsManager settingsManager = new AiSettingsManager(this);
+            AiSettingsManager.TemplateImportData data = settingsManager.parseTemplateImportFile(inputStream);
+            inputStream.close();
+
+            showAiTemplateImportOptionsDialog(settingsManager, data);
+        } catch (Exception e) {
+            showToast("テンプレートのインポート失敗: " + e.getMessage(), true);
         }
     }
 
@@ -1583,6 +1695,47 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                     CustomCommandManager.ImportResult result = mCustomCommandManager.importData(data, mode);
                     showToast("インポート完了\n" + result.toString(), false);
                     showCustomCommandsDialog();
+                })
+                .show();
+    }
+
+    /**
+     * Show import options dialog for AI prompt templates.
+     */
+    private void showAiTemplateImportOptionsDialog(AiSettingsManager settingsManager,
+            AiSettingsManager.TemplateImportData data) {
+        String message = "インポート内容:\n" +
+                "• テンプレート: " + data.templates.size() + "個\n\n" +
+                "インポート方法を選択してください:";
+
+        String[] options = {
+                "マージ（既存を残して追加のみ）",
+                "上書き（重複は置換）",
+                "すべてクリアしてインポート",
+                "キャンセル"
+        };
+
+        new AlertDialog.Builder(this)
+                .setTitle("テンプレートをインポート")
+                .setMessage(message)
+                .setItems(options, (dialog, which) -> {
+                    AiSettingsManager.TemplateImportMode mode;
+                    switch (which) {
+                        case 0:
+                            mode = AiSettingsManager.TemplateImportMode.MERGE;
+                            break;
+                        case 1:
+                            mode = AiSettingsManager.TemplateImportMode.REPLACE;
+                            break;
+                        case 2:
+                            mode = AiSettingsManager.TemplateImportMode.CLEAR_AND_IMPORT;
+                            break;
+                        default:
+                            return;
+                    }
+
+                    AiSettingsManager.TemplateImportResult result = settingsManager.importTemplates(data, mode);
+                    showToast("テンプレートをインポートしました\n" + result.toString(), false);
                 })
                 .show();
     }
@@ -1981,7 +2134,8 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             inputStream.close();
 
             // Parse the file
-            List<String> comments = com.termux.app.claude.ClaudeChatParser.getAgentComments(tempFile.getAbsolutePath());
+            List<com.termux.app.claude.ClaudeChatParser.AgentComment> comments = com.termux.app.claude.ClaudeChatParser
+                    .getAgentComments(tempFile.getAbsolutePath());
 
             // Clean up temp file
             tempFile.delete();
@@ -1997,7 +2151,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                 if (i > 0) {
                     fullText.append("\n\n---\n\n");
                 }
-                fullText.append(comments.get(i));
+                fullText.append(comments.get(i).text);
             }
 
             // Create pager and show dialog
@@ -2222,23 +2376,28 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         claudeButton.setOnClickListener(v -> {
             // Show source selection dialog
             new AlertDialog.Builder(this)
-                    .setTitle("Claude 会話履歴")
+                    .setTitle("AI / Claude メニュー")
                     .setItems(new String[] {
+                            "✨ AI Assistant (LLM)",
                             "🤖 Claude→AR (自動同期)",
                             "👁️ AR Viewを開く",
                             "🔄 サーバー再起動"
                     }, (dialog, which) -> {
                         if (which == 0) {
+                            showAiInteractionDialog();
+                            return;
+                        }
+                        if (which == 1) {
                             // Auto AR sync
                             showAutoArSyncDialog();
                             return;
                         }
-                        if (which == 1) {
+                        if (which == 2) {
                             // Open AR View
                             openArViewIfAvailable();
                             return;
                         }
-                        if (which == 2) {
+                        if (which == 3) {
                             // Restart server
                             restartClaudeServer();
                             return;
@@ -2249,6 +2408,17 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         });
     }
 
+    /**
+     * Set up AI Assistant button.
+     */
+    private void setAiAssistantButton() {
+        View aiButton = findViewById(R.id.aiAssistantButton);
+        if (aiButton == null)
+            return;
+
+        aiButton.setOnClickListener(v -> showAiInteractionDialog());
+    }
+
     // Claude history server settings
     private static final int CLAUDE_SERVER_PORT = 8765;
     private String mCurrentSshHost = ""; // SSH host for HTTP server connection
@@ -2257,6 +2427,9 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     private AutoArSyncManager mAutoArSyncManager;
     private MediaControlManager mMediaControlManager; // For media button control
     private AlertDialog mActiveArDialog; // Track active AR dialog
+    private AiSettingsManager mAiSettingsManager;
+    private LlmClient mLlmClient;
+    private TursoSyncManager mTursoSyncManager;
 
     /**
      * Shows dialog for automatic AR sync.
@@ -2346,13 +2519,44 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             @Override
             public void onFileChanged() {
                 showToast("ファイル更新検出！ダウンロード中...", false);
+                // When file changed successfully, we usually want to show the content.
+                // The onSyncComplete will handle the Turso sync and then call
+                // showAutoArPagerDialog.
             }
 
             @Override
-            public void onSyncComplete(String content) {
-                showToast("AR表示完了！", false);
-                // Show pager dialog for navigation
-                showAutoArPagerDialog(content);
+            public void onStatusChanged(String status) {
+                android.util.Log.d("AutoArSync", "Status: " + status);
+            }
+
+            @Override
+            public void onSyncComplete(String filePath, String content) {
+                showToast("AR同期中...", false);
+                // Sync to Turso (Always sync)
+                if (mTursoSyncManager != null) {
+                    mTursoSyncManager.sync(filePath, () -> {
+                        // After sync completes, fetch latest message from Turso
+                        mTursoSyncManager.getLastAssistantMessage(new java.io.File(filePath).getName(),
+                                new com.termux.app.turso.TursoSyncManager.MessageCallback() {
+                                    @Override
+                                    public void onResult(String message) {
+                                        runOnUiThread(() -> {
+                                            if (message != null && !message.trim().isEmpty()) {
+                                                showAutoArPagerDialog(message);
+                                                showToast("AR表示完了 (from Turso)", false);
+                                            } else {
+                                                android.util.Log.d("AutoArSync", "Turso returned empty message");
+                                            }
+                                        });
+                                    }
+
+                                    @Override
+                                    public void onError(String error) {
+                                        runOnUiThread(() -> showToast("Turso取得エラー: " + error, true));
+                                    }
+                                });
+                    });
+                }
             }
 
             @Override
@@ -2371,11 +2575,144 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
      * Shows AR pager dialog after auto sync completes.
      */
     private void showAutoArPagerDialog(String content) {
+        android.util.Log.d("AutoArSync", "showAutoArPagerDialog called with: "
+                + (content != null ? content.substring(0, Math.min(20, content.length())) : "null"));
+        // Reuse existing dialog if visible
+        if (mActiveArDialog != null && mActiveArDialog.isShowing()) {
+            android.util.Log.d("AutoArSync", "Reusing existing dialog: " + mActiveArDialog);
+            if (mCurrentArPager != null) {
+                mCurrentArPager.updateText(content);
+                mCurrentArPager.sendCurrentPage(null); // Send new content immediately
+                updateArDialogUI(mActiveArDialog, mCurrentArPager);
+            }
+            return;
+        }
+        android.util.Log.d("AutoArSync", "Creating NEW dialog");
+
         ArTextPager pager = new ArTextPager(
                 EvenG1Manager.getInstance(),
                 new Handler(Looper.getMainLooper()),
                 content);
         showArControllerDialog(pager);
+    }
+
+    /**
+     * Opens AR View for the latest conversation history with Turso synchronization.
+     */
+    /**
+     * Opens AR View after allowing user to select a session from the server.
+     */
+    private void openArViewIfAvailable() {
+        if (mCurrentSshHost == null || mCurrentSshHost.isEmpty()) {
+            showToast("SSHホストが設定されていません", true);
+            return;
+        }
+
+        showToast("セッション一覧を取得中...", false);
+
+        ClaudeHistoryHttpClient client = new ClaudeHistoryHttpClient(mCurrentSshHost, CLAUDE_SERVER_PORT);
+        client.listCurrentFiles(new ClaudeHistoryHttpClient.FileListCallback() {
+            @Override
+            public void onSuccess(String cwd, String project,
+                    java.util.List<ClaudeHistoryHttpClient.RemoteFile> files) {
+                runOnUiThread(() -> {
+                    if (files.isEmpty()) {
+                        showToast("会話履歴が見つかりません", true);
+                        return;
+                    }
+                    showRemoteConversationListDialog(files, client);
+                });
+            }
+
+            @Override
+            public void onError(String message) {
+                runOnUiThread(() -> showToast("一覧取得エラー: " + message, true));
+            }
+        });
+    }
+
+    private void showRemoteConversationListDialog(java.util.List<ClaudeHistoryHttpClient.RemoteFile> files,
+            ClaudeHistoryHttpClient client) {
+        String[] fileNames = new String[files.size()];
+        for (int i = 0; i < files.size(); i++) {
+            fileNames[i] = "📄 " + files.get(i).displayName;
+        }
+
+        new AlertDialog.Builder(this)
+                .setTitle("AR表示するセッションを選択 (" + files.size() + ")")
+                .setItems(fileNames, (dialog, which) -> {
+                    ClaudeHistoryHttpClient.RemoteFile selected = files.get(which);
+                    showToast(selected.name + " をダウンロード中...", false);
+                    client.downloadFile(selected, new ClaudeHistoryHttpClient.DownloadCallback() {
+                        @Override
+                        public void onSuccess(String localPath) {
+                            processAndShowArView(localPath);
+                        }
+
+                        @Override
+                        public void onError(String message) {
+                            runOnUiThread(() -> showToast("ダウンロードエラー: " + message, true));
+                        }
+                    });
+                })
+                .setNegativeButton("キャンセル", null)
+                .show();
+    }
+
+    private void processAndShowArView(String localPath) {
+        // Get latest message
+        com.termux.app.claude.ClaudeChatParser.AgentComment comment = com.termux.app.claude.ClaudeChatParser
+                .getLatestAgentComment(localPath);
+
+        if (comment != null && !comment.text.trim().isEmpty()) {
+            runOnUiThread(() -> {
+                // Sync to Turso (Always sync)
+                if (mTursoSyncManager != null) {
+                    mTursoSyncManager.sync(localPath, () -> {
+                        // After sync completes, fetch FULL history
+                        mTursoSyncManager.getConversationHistory(new java.io.File(localPath).getName(),
+                                new com.termux.app.turso.TursoSyncManager.HistoryCallback() {
+                                    @Override
+                                    public void onResult(java.util.List<String> historyItems) {
+                                        runOnUiThread(() -> {
+                                            if (historyItems != null && !historyItems.isEmpty()) {
+                                                mCurrentConversationHistory = historyItems;
+                                                mCurrentHistoryIndex = historyItems.size() - 1;
+                                                String latestMessage = historyItems.get(mCurrentHistoryIndex);
+
+                                                showAutoArPagerDialog(latestMessage);
+                                                showToast("AR表示完了 (履歴: " + historyItems.size() + "件)", false);
+                                            } else {
+                                                // Fallback to local parsing
+                                                mCurrentConversationHistory = null;
+                                                mCurrentHistoryIndex = -1;
+                                                showAutoArPagerDialog(comment.text);
+                                                showToast("AR表示完了 (ローカル)", false);
+                                            }
+                                        });
+                                    }
+
+                                    @Override
+                                    public void onError(String error) {
+                                        runOnUiThread(() -> {
+                                            showToast("Turso履歴取得エラー: " + error, true);
+                                            // Fallback to local parsing
+                                            mCurrentConversationHistory = null;
+                                            mCurrentHistoryIndex = -1;
+                                            showAutoArPagerDialog(comment.text);
+                                        });
+                                    }
+                                });
+                    });
+                } else {
+                    mCurrentConversationHistory = null;
+                    mCurrentHistoryIndex = -1;
+                    showAutoArPagerDialog(comment.text);
+                }
+            });
+        } else {
+            runOnUiThread(() -> showToast("履歴が見つかりません", true));
+        }
     }
 
     /**
@@ -2648,17 +2985,71 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             });
 
             AlertDialog.Builder builder = new AlertDialog.Builder(this);
+
+            // Custom Layout Construction
+            android.widget.LinearLayout layout = new android.widget.LinearLayout(this);
+            layout.setOrientation(android.widget.LinearLayout.VERTICAL);
+            int padding = (int) (16 * getResources().getDisplayMetrics().density);
+            layout.setPadding(padding, padding, padding, padding);
+
+            // Text View in ScrollView
+            android.widget.ScrollView scrollView = new android.widget.ScrollView(this);
+            android.widget.TextView textView = new android.widget.TextView(this);
+            textView.setTextSize(16);
+            textView.setTag("msg_text"); // Tag for finding later
+            scrollView.addView(textView);
+
+            android.widget.LinearLayout.LayoutParams scrollParams = new android.widget.LinearLayout.LayoutParams(
+                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                    0, 1.0f); // Weight 1 to take available space
+            layout.addView(scrollView, scrollParams);
+
+            // Buttons Layout
+            android.widget.LinearLayout btnLayout = new android.widget.LinearLayout(this);
+            btnLayout.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+            btnLayout.setGravity(android.view.Gravity.CENTER);
+            btnLayout.setPadding(0, padding, 0, 0);
+
+            // Previous Turn Button
+            android.widget.Button btnPrevTurn = new android.widget.Button(this);
+            btnPrevTurn.setText("<< 前ログ");
+            btnPrevTurn.setOnClickListener(v -> navigateTurn(-1));
+            btnPrevTurn.setEnabled(mCurrentConversationHistory != null && mCurrentHistoryIndex > 0);
+            btnPrevTurn.setTag("btn_prev_turn");
+            btnLayout.addView(btnPrevTurn);
+
+            // Prev Page Button
+            android.widget.Button btnPrevPage = new android.widget.Button(this);
+            btnPrevPage.setText("< 前項");
+            btnPrevPage.setOnClickListener(v -> {
+                pager.prevPage(null);
+                updateArDialogUI(mActiveArDialog, pager);
+            });
+            btnLayout.addView(btnPrevPage);
+
+            // Next Page Button
+            android.widget.Button btnNextPage = new android.widget.Button(this);
+            btnNextPage.setText("次項 >");
+            btnNextPage.setOnClickListener(v -> {
+                pager.nextPage(null);
+                updateArDialogUI(mActiveArDialog, pager);
+            });
+            btnLayout.addView(btnNextPage);
+
+            // Next Turn Button
+            android.widget.Button btnNextTurn = new android.widget.Button(this);
+            btnNextTurn.setText("次ログ >>");
+            btnNextTurn.setOnClickListener(v -> navigateTurn(1));
+            btnNextTurn.setEnabled(mCurrentConversationHistory != null
+                    && mCurrentHistoryIndex < (mCurrentConversationHistory.size() - 1));
+            btnNextTurn.setTag("btn_next_turn");
+            btnLayout.addView(btnNextTurn);
+
+            layout.addView(btnLayout);
+
+            builder.setView(layout);
             builder.setTitle("AR View (" + pager.getCurrentPageNum() + "/" + pager.getTotalPages() + ")");
-
-            // Show current page text in message area
-            String currentText = pager.getCurrentPageText();
-            builder.setMessage("現在の表示:\n\n" + currentText);
-
-            // Use standard buttons but prevent auto-dismiss
-            builder.setPositiveButton("次へ", null);
-            builder.setNegativeButton("前へ", null);
             builder.setNeutralButton("閉じる", (dialog, which) -> {
-                // Media session stopped by dismiss listener
                 dialog.dismiss();
             });
 
@@ -2669,66 +3060,58 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
 
             AlertDialog dialog = builder.create();
             mActiveArDialog = dialog; // Keep reference
+
+            // Initial UI Update
+            textView.setText("現在の表示:\n\n" + pager.getCurrentPageText());
+
             dialog.show();
 
-            // Override onClickListeners to prevent dismiss
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
-                try {
-                    pager.nextPage(null);
-                    updateArDialogUI(dialog, pager);
-                } catch (Exception e) {
-                    showToast("次ページエラー: " + e.getMessage(), true);
-                }
-            });
-
-            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener(v -> {
-                try {
-                    pager.prevPage(null);
-                    updateArDialogUI(dialog, pager);
-                } catch (Exception e) {
-                    showToast("前ページエラー: " + e.getMessage(), true);
-                }
-            });
         } catch (Exception e) {
-            showToast("ARダイアログエラー: " + e.getMessage(), true);
-            android.util.Log.e("TermuxActivity", "showArControllerDialog error", e);
+            showToast("ダイアログ表示エラー: " + e.getMessage(), true);
+        }
+    }
+
+    private void navigateTurn(int direction) {
+        if (mCurrentConversationHistory == null)
+            return;
+
+        int newIndex = mCurrentHistoryIndex + direction;
+        if (newIndex >= 0 && newIndex < mCurrentConversationHistory.size()) {
+            mCurrentHistoryIndex = newIndex;
+            String newText = mCurrentConversationHistory.get(newIndex);
+            showAutoArPagerDialog(newText);
         }
     }
 
     private void updateArDialogUI(AlertDialog dialog, ArTextPager pager) {
         if (dialog == null || !dialog.isShowing())
             return;
+
         dialog.setTitle("AR View (" + pager.getCurrentPageNum() + "/" + pager.getTotalPages() + ")");
-        dialog.setMessage("現在の表示:\n\n" + pager.getCurrentPageText());
-    }
 
-    /**
-     * Opens AR View dialog if mCurrentArPager is available.
-     * Can be called from menu or other places to reopen the dialog.
-     */
-    private void openArViewIfAvailable() {
-        if (mCurrentArPager == null) {
-            showToast("AR Viewが利用できません。まずClaude→AR自動同期を使用してください。", true);
-            return;
-        }
-
-        if (!EvenG1Manager.getInstance().isConnected()) {
-            showToast("ARグラスが接続されていません", true);
-            return;
-        }
-
-        // Send current page and show dialog
-        mCurrentArPager.sendCurrentPage(new EvenG1Protocol.TextSendCallback() {
-            @Override
-            public void onSuccess() {
-                runOnUiThread(() -> showArControllerDialog(mCurrentArPager));
+        android.widget.TextView textView = dialog
+                .findViewById(dialog.getContext().getResources().getIdentifier("msg_text", "id", getPackageName()));
+        // Since we didn't use XML ID, we iterate user view helper/tags or just traverse
+        // Simpler: findViewWithTag
+        android.view.View rootView = dialog.findViewById(android.R.id.custom); // This gets the FrameLayout wrapping our
+                                                                               // view
+        if (rootView != null) {
+            android.widget.TextView tv = rootView.findViewWithTag("msg_text");
+            if (tv != null) {
+                tv.setText("現在の表示:\n\n" + pager.getCurrentPageText());
             }
 
-            @Override
-            public void onFailure(@NonNull String error) {
-                runOnUiThread(() -> showToast("送信失敗: " + error, true));
+            android.view.View btnPrevTurn = rootView.findViewWithTag("btn_prev_turn");
+            if (btnPrevTurn != null) {
+                btnPrevTurn.setEnabled(mCurrentConversationHistory != null && mCurrentHistoryIndex > 0);
             }
-        });
+
+            android.view.View btnNextTurn = rootView.findViewWithTag("btn_next_turn");
+            if (btnNextTurn != null) {
+                btnNextTurn.setEnabled(mCurrentConversationHistory != null
+                        && mCurrentHistoryIndex < (mCurrentConversationHistory.size() - 1));
+            }
+        }
     }
 
     /**
@@ -2811,6 +3194,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         menu.add(Menu.NONE, CONTEXT_MENU_HELP_ID, Menu.NONE, R.string.action_open_help);
         menu.add(Menu.NONE, CONTEXT_MENU_SETTINGS_ID, Menu.NONE, R.string.action_open_settings);
         menu.add(Menu.NONE, CONTEXT_MENU_REPORT_ID, Menu.NONE, R.string.action_report_issue);
+        menu.add(Menu.NONE, CONTEXT_MENU_AI_ASSISTANT_ID, Menu.NONE, "AI Assistant");
     }
 
     /** Hook system menu to show context menu instead. */
@@ -2851,6 +3235,9 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                 return true;
             case CONTEXT_MENU_TOGGLE_KEEP_SCREEN_ON:
                 toggleKeepScreenOn();
+                return true;
+            case CONTEXT_MENU_AI_ASSISTANT_ID:
+                showAiInteractionDialog();
                 return true;
             case CONTEXT_MENU_HELP_ID:
                 ActivityUtils.startActivity(this, new Intent(this, HelpActivity.class));
@@ -3174,6 +3561,51 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         Intent intent = new Intent(context, TermuxActivity.class);
         intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         return intent;
+    }
+
+    /**
+     * Shows the AI Interaction Dialog.
+     */
+    public void showAiInteractionDialog() {
+        new com.termux.app.ai.AiInteractionDialog(this, mAiSettingsManager, mLlmClient).show();
+    }
+
+    /**
+     * Sends AI response string to AR glasses and shows the controller dialog.
+     */
+    public void sendAiResponseToAr(String responseText) {
+        if (responseText == null || responseText.isEmpty())
+            return;
+
+        runOnUiThread(() -> {
+            boolean isConnected = com.termux.app.eveng1.EvenG1Manager.getInstance().isConnected();
+            if (!isConnected) {
+                showToast("AR Not Connected, but creating pager.", true);
+            }
+
+            // Create Pager
+            com.termux.app.eveng1.EvenG1Manager manager = com.termux.app.eveng1.EvenG1Manager.getInstance();
+            android.os.Handler handler = new android.os.Handler();
+            com.termux.app.eveng1.ArTextPager pager = new com.termux.app.eveng1.ArTextPager(manager, handler,
+                    responseText);
+
+            // Send first page if connected
+            if (isConnected) {
+                pager.sendCurrentPage(new com.termux.app.eveng1.EvenG1Protocol.TextSendCallback() {
+                    @Override
+                    public void onSuccess() {
+                    }
+
+                    @Override
+                    public void onFailure(String error) {
+                        showToast("AR Send Failed: " + error, true);
+                    }
+                });
+            }
+
+            // Show Controller
+            showArControllerDialog(pager);
+        });
     }
 
 }

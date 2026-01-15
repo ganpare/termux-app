@@ -210,6 +210,16 @@
                 android:layout_marginEnd="4dp" />
 
             <com.google.android.material.button.MaterialButton
+                android:id="@+id/aiAssistantButton"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="48dp"
+                android:text="AI"
+                android:textSize="14sp"
+                android:backgroundTint="#673AB7"
+                android:layout_marginHorizontal="2dp" />
+
+            <com.google.android.material.button.MaterialButton
                 android:id="@+id/claudeSyncButton"
                 android:layout_width="0dp"
                 android:layout_weight="1"
