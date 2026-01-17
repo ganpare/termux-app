@@ -272,8 +272,20 @@ public class TursoSyncManager {
 
                             for (int i = 0; i < content.length(); i++) {
                                 JSONObject part = content.optJSONObject(i);
-                                if ("text".equals(part.optString("type"))) {
-                                    String text = part.optString("text");
+                                String textToInsert = null;
+
+                                String typePart = part.optString("type");
+                                if ("text".equals(typePart)) {
+                                    textToInsert = part.optString("text");
+                                } else if ("tool_use".equals(typePart)) {
+                                    // Skip tool_use for cleaner AR view as requested by user
+                                    // String toolName = part.optString("name");
+                                    // JSONObject input = part.optJSONObject("input");
+                                    // textToInsert = String.format("[Tool: %s input=%s]", toolName, input != null ?
+                                    // input.toString() : "{}");
+                                }
+
+                                if (textToInsert != null) {
                                     List<Object> asstArgs = new ArrayList<>();
                                     asstArgs.add(sessionId);
                                     // turn_id (nullable)
@@ -287,7 +299,7 @@ public class TursoSyncManager {
                                     asstArgs.add(model);
                                     asstArgs.add(stopReason);
                                     asstArgs.add(i); // part_index
-                                    asstArgs.add(text);
+                                    asstArgs.add(textToInsert);
 
                                     client.executeSync(
                                             "INSERT INTO assistant_texts (session_id, turn_id, assistant_uuid, parent_uuid, ts, model, stop_reason, part_index, text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",

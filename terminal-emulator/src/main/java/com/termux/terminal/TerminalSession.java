@@ -20,13 +20,18 @@ import java.util.UUID;
 /**
  * A terminal session, consisting of a process coupled to a terminal interface.
  * <p>
- * The subprocess will be executed by the constructor, and when the size is made known by a call to
- * {@link #updateSize(int, int, int, int)} terminal emulation will begin and threads will be spawned to handle the subprocess I/O.
- * All terminal emulation and callback methods will be performed on the main thread.
+ * The subprocess will be executed by the constructor, and when the size is made
+ * known by a call to
+ * {@link #updateSize(int, int, int, int)} terminal emulation will begin and
+ * threads will be spawned to handle the subprocess I/O.
+ * All terminal emulation and callback methods will be performed on the main
+ * thread.
  * <p>
- * The child process may be exited forcefully by using the {@link #finishIfRunning()} method.
+ * The child process may be exited forcefully by using the
+ * {@link #finishIfRunning()} method.
  * <p>
- * NOTE: The terminal session may outlive the EmulatorView, so be careful with callbacks!
+ * NOTE: The terminal session may outlive the EmulatorView, so be careful with
+ * callbacks!
  */
 public final class TerminalSession extends TerminalOutput {
 
@@ -38,34 +43,47 @@ public final class TerminalSession extends TerminalOutput {
     TerminalEmulator mEmulator;
 
     /**
-     * A queue written to from a separate thread when the process outputs, and read by main thread to process by
+     * A queue written to from a separate thread when the process outputs, and read
+     * by main thread to process by
      * terminal emulator.
      */
     final ByteQueue mProcessToTerminalIOQueue = new ByteQueue(4096);
     /**
-     * A queue written to from the main thread due to user interaction, and read by another thread which forwards by
+     * A queue written to from the main thread due to user interaction, and read by
+     * another thread which forwards by
      * writing to the {@link #mTerminalFileDescriptor}.
      */
     final ByteQueue mTerminalToProcessIOQueue = new ByteQueue(4096);
-    /** Buffer to write translate code points into utf8 before writing to mTerminalToProcessIOQueue */
+    /**
+     * Buffer to write translate code points into utf8 before writing to
+     * mTerminalToProcessIOQueue
+     */
     private final byte[] mUtf8InputBuffer = new byte[5];
 
     /** Callback which gets notified when a session finishes or changes title. */
     TerminalSessionClient mClient;
 
-    /** The pid of the shell process. 0 if not started and -1 if finished running. */
+    /**
+     * The pid of the shell process. 0 if not started and -1 if finished running.
+     */
     int mShellPid;
 
-    /** The exit status of the shell process. Only valid if ${@link #mShellPid} is -1. */
+    /**
+     * The exit status of the shell process. Only valid if ${@link #mShellPid} is
+     * -1.
+     */
     int mShellExitStatus;
 
     /**
-     * The file descriptor referencing the master half of a pseudo-terminal pair, resulting from calling
+     * The file descriptor referencing the master half of a pseudo-terminal pair,
+     * resulting from calling
      * {@link JNI#createSubprocess(String, String, String[], String[], int[], int, int, int, int)}.
      */
     private int mTerminalFileDescriptor;
 
-    /** Set by the application for user identification of session, not by terminal. */
+    /**
+     * Set by the application for user identification of session, not by terminal.
+     */
     public String mSessionName;
 
     final Handler mMainThreadHandler = new MainThreadHandler();
@@ -76,10 +94,10 @@ public final class TerminalSession extends TerminalOutput {
     private final String[] mEnv;
     private final Integer mTranscriptRows;
 
-
     private static final String LOG_TAG = "TerminalSession";
 
-    public TerminalSession(String shellPath, String cwd, String[] args, String[] env, Integer transcriptRows, TerminalSessionClient client) {
+    public TerminalSession(String shellPath, String cwd, String[] args, String[] env, Integer transcriptRows,
+            TerminalSessionClient client) {
         this.mShellPath = shellPath;
         this.mCwd = cwd;
         this.mArgs = args;
@@ -89,8 +107,10 @@ public final class TerminalSession extends TerminalOutput {
     }
 
     /**
-     * @param client The {@link TerminalSessionClient} interface implementation to allow
-     *               for communication between {@link TerminalSession} and its client.
+     * @param client The {@link TerminalSessionClient} interface implementation to
+     *               allow
+     *               for communication between {@link TerminalSession} and its
+     *               client.
      */
     public void updateTerminalSessionClient(TerminalSessionClient client) {
         mClient = client;
@@ -99,7 +119,10 @@ public final class TerminalSession extends TerminalOutput {
             mEmulator.updateTerminalSessionClient(client);
     }
 
-    /** Inform the attached pty of the new size and reflow or initialize the emulator. */
+    /**
+     * Inform the attached pty of the new size and reflow or initialize the
+     * emulator.
+     */
     public void updateSize(int columns, int rows, int cellWidthPixels, int cellHeightPixels) {
         if (mEmulator == null) {
             initializeEmulator(columns, rows, cellWidthPixels, cellHeightPixels);
@@ -121,10 +144,12 @@ public final class TerminalSession extends TerminalOutput {
      * @param rows    The number of rows in the terminal window.
      */
     public void initializeEmulator(int columns, int rows, int cellWidthPixels, int cellHeightPixels) {
-        mEmulator = new TerminalEmulator(this, columns, rows, cellWidthPixels, cellHeightPixels, mTranscriptRows, mClient);
+        mEmulator = new TerminalEmulator(this, columns, rows, cellWidthPixels, cellHeightPixels, mTranscriptRows,
+                mClient);
 
         int[] processId = new int[1];
-        mTerminalFileDescriptor = JNI.createSubprocess(mShellPath, mCwd, mArgs, mEnv, processId, rows, columns, cellWidthPixels, cellHeightPixels);
+        mTerminalFileDescriptor = JNI.createSubprocess(mShellPath, mCwd, mArgs, mEnv, processId, rows, columns,
+                cellWidthPixels, cellHeightPixels);
         mShellPid = processId[0];
         mClient.setTerminalShellPid(this, mShellPid);
 
@@ -137,8 +162,10 @@ public final class TerminalSession extends TerminalOutput {
                     final byte[] buffer = new byte[4096];
                     while (true) {
                         int read = termIn.read(buffer);
-                        if (read == -1) return;
-                        if (!mProcessToTerminalIOQueue.write(buffer, 0, read)) return;
+                        if (read == -1)
+                            return;
+                        if (!mProcessToTerminalIOQueue.write(buffer, 0, read))
+                            return;
                         mMainThreadHandler.sendEmptyMessage(MSG_NEW_INPUT);
                     }
                 } catch (Exception e) {
@@ -154,7 +181,8 @@ public final class TerminalSession extends TerminalOutput {
                 try (FileOutputStream termOut = new FileOutputStream(terminalFileDescriptorWrapped)) {
                     while (true) {
                         int bytesToWrite = mTerminalToProcessIOQueue.read(buffer, true);
-                        if (bytesToWrite == -1) return;
+                        if (bytesToWrite == -1)
+                            return;
                         termOut.write(buffer, 0, bytesToWrite);
                     }
                 } catch (IOException e) {
@@ -176,18 +204,21 @@ public final class TerminalSession extends TerminalOutput {
     /** Write data to the shell process. */
     @Override
     public void write(byte[] data, int offset, int count) {
-        if (mShellPid > 0) mTerminalToProcessIOQueue.write(data, offset, count);
+        if (mShellPid > 0)
+            mTerminalToProcessIOQueue.write(data, offset, count);
     }
 
     /** Write the Unicode code point to the terminal encoded in UTF-8. */
     public void writeCodePoint(boolean prependEscape, int codePoint) {
         if (codePoint > 1114111 || (codePoint >= 0xD800 && codePoint <= 0xDFFF)) {
-            // 1114111 (= 2**16 + 1024**2 - 1) is the highest code point, [0xD800,0xDFFF] is the surrogate range.
+            // 1114111 (= 2**16 + 1024**2 - 1) is the highest code point, [0xD800,0xDFFF] is
+            // the surrogate range.
             throw new IllegalArgumentException("Invalid code point: " + codePoint);
         }
 
         int bufferPosition = 0;
-        if (prependEscape) mUtf8InputBuffer[bufferPosition++] = 27;
+        if (prependEscape)
+            mUtf8InputBuffer[bufferPosition++] = 27;
 
         if (codePoint <= /* 7 bits */0b1111111) {
             mUtf8InputBuffer[bufferPosition++] = (byte) codePoint;
@@ -203,7 +234,10 @@ public final class TerminalSession extends TerminalOutput {
             mUtf8InputBuffer[bufferPosition++] = (byte) (0b10000000 | ((codePoint >> 6) & 0b111111));
             /* 10xxxxxx continuation byte with following 6 bits */
             mUtf8InputBuffer[bufferPosition++] = (byte) (0b10000000 | (codePoint & 0b111111));
-        } else { /* We have checked codePoint <= 1114111 above, so we have max 21 bits = 0b111111111111111111111 */
+        } else { /*
+                  * We have checked codePoint <= 1114111 above, so we have max 21 bits =
+                  * 0b111111111111111111111
+                  */
             /* 11110xxx leading byte with leading 3 bits */
             mUtf8InputBuffer[bufferPosition++] = (byte) (0b11110000 | (codePoint >> 18));
             /* 10xxxxxx continuation byte with following 6 bits */
@@ -293,8 +327,53 @@ public final class TerminalSession extends TerminalOutput {
         return mShellPid;
     }
 
+    private volatile String mCwdOverride;
+    private volatile String mCwdHost;
+
+    /**
+     * Sets the CWD as reported by the terminal (e.g. via OSC 7).
+     * 
+     * @param cwd The URL-encoded path (file://hostname/path) from OSC 7.
+     */
+    public void setCwdOverride(String cwd) {
+        if (cwd == null) {
+            mCwdOverride = null;
+            return;
+        }
+        // OSC 7 format: file://hostname/path
+        // We want to extract just the path.
+        // If it starts with file://, strip it.
+        // Hostname is usually localhost or the remote host.
+        // Ideally we just want the path part.
+        String path = cwd;
+        if (path.startsWith("file://")) {
+            int pathStart = path.indexOf('/', 7);
+            if (pathStart != -1) {
+                // Extract hostname (e.g. file://hostname/path)
+                String hostname = path.substring(7, pathStart);
+                if (!hostname.isEmpty() && !hostname.equals("localhost")) {
+                    mCwdHost = hostname;
+                } else {
+                    mCwdHost = null;
+                }
+                path = path.substring(pathStart);
+            }
+        }
+        // URL decode if necessary (spaces etc). Simple decode for now:
+        try {
+            path = java.net.URLDecoder.decode(path, "UTF-8");
+        } catch (java.io.UnsupportedEncodingException e) {
+            // Should not happen
+        }
+        mCwdOverride = path;
+    }
+
     /** Returns the shell's working directory or null if it was unavailable. */
     public String getCwd() {
+        if (mCwdOverride != null) {
+            return mCwdOverride;
+        }
+
         if (mShellPid < 1) {
             return null;
         }
@@ -314,6 +393,11 @@ public final class TerminalSession extends TerminalOutput {
         return null;
     }
 
+    /** Returns the hostname reported via OSC 7, or null if unavailable. */
+    public String getCwdHost() {
+        return mCwdHost;
+    }
+
     private static FileDescriptor wrapFileDescriptor(int fileDescriptor, TerminalSessionClient client) {
         FileDescriptor result = new FileDescriptor();
         try {
@@ -327,7 +411,8 @@ public final class TerminalSession extends TerminalOutput {
             descriptorField.setAccessible(true);
             descriptorField.set(result, fileDescriptor);
         } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
-            Logger.logStackTraceWithMessage(client, LOG_TAG, "Error accessing FileDescriptor#descriptor private field", e);
+            Logger.logStackTraceWithMessage(client, LOG_TAG, "Error accessing FileDescriptor#descriptor private field",
+                    e);
             System.exit(1);
         }
         return result;

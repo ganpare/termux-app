@@ -25,6 +25,12 @@
 - **Developer Presets**: Common AI agent commands (claude, cursor, codex, etc.) are automatically populated into an "AI Agents" folder on startup.
 - **Automation**: Developers can define additional persistent presets in `CustomCommandManager.java#ensureDefaultCommands()`.
 
+### AI Assistant & AR
+- **LLM Integration**: Built-in chat interface for Claude/OpenAI with customizable prompts.
+- **AR Glasses Support**: Direct integration with Even Realities G1 glasses to display notifications and AI responses.
+- **Conversation Sync**: Automatically sync Claude Code conversation history (`.jsonl`) to a Turso database for archival and analysis.
+- **Voice Input**: Azure Speech-to-Text integration for voice commands.
+
 ## 📋 UI Buttons
 
 | Button | Color | Function |

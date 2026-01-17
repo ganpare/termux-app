@@ -3,6 +3,8 @@ package com.termux.app.media;
 import android.content.Context;
 import android.support.v4.media.session.MediaSessionCompat;
 import android.support.v4.media.session.PlaybackStateCompat;
+import android.os.Handler;
+import android.os.Looper;
 import com.termux.shared.logger.Logger;
 
 /**
@@ -16,17 +18,26 @@ public class MediaControlManager {
     private final Context mContext;
     private MediaSessionCompat mMediaSession;
     private SilentAudioPlayer mSilentPlayer;
+    private Handler mHandler;
+    private Runnable mPendingNext;
+    private Runnable mPendingPrev;
+    private static final int DOUBLE_CLICK_DELAY = 300;
     private MediaControlCallback mCallback;
 
     public interface MediaControlCallback {
-        void onNext();
+        void onNextSingle();
 
-        void onPrevious();
+        void onNextDouble();
+
+        void onPreviousSingle();
+
+        void onPreviousDouble();
     }
 
     public MediaControlManager(Context context) {
         mContext = context;
         mSilentPlayer = new SilentAudioPlayer(context);
+        mHandler = new Handler(Looper.getMainLooper());
     }
 
     public void start(MediaControlCallback callback) {
@@ -56,16 +67,46 @@ public class MediaControlManager {
             mMediaSession.setCallback(new MediaSessionCompat.Callback() {
                 @Override
                 public void onSkipToNext() {
-                    Logger.logDebug(LOG_TAG, "onSkipToNext triggered");
-                    if (mCallback != null)
-                        mCallback.onNext();
+                    android.util.Log.d(LOG_TAG, "onSkipToNext triggered");
+                    if (mCallback == null)
+                        return;
+
+                    if (mPendingNext != null) {
+                        android.util.Log.d(LOG_TAG, "Double Click Detected (Next)");
+                        mHandler.removeCallbacks(mPendingNext);
+                        mPendingNext = null;
+                        mCallback.onNextDouble();
+                    } else {
+                        android.util.Log.d(LOG_TAG, "Scheduling Single Click (Next)");
+                        mPendingNext = () -> {
+                            android.util.Log.d(LOG_TAG, "Firing Single Click (Next)");
+                            mCallback.onNextSingle();
+                            mPendingNext = null;
+                        };
+                        mHandler.postDelayed(mPendingNext, DOUBLE_CLICK_DELAY);
+                    }
                 }
 
                 @Override
                 public void onSkipToPrevious() {
-                    Logger.logDebug(LOG_TAG, "onSkipToPrevious triggered");
-                    if (mCallback != null)
-                        mCallback.onPrevious();
+                    android.util.Log.d(LOG_TAG, "onSkipToPrevious triggered");
+                    if (mCallback == null)
+                        return;
+
+                    if (mPendingPrev != null) {
+                        android.util.Log.d(LOG_TAG, "Double Click Detected (Prev)");
+                        mHandler.removeCallbacks(mPendingPrev);
+                        mPendingPrev = null;
+                        mCallback.onPreviousDouble();
+                    } else {
+                        android.util.Log.d(LOG_TAG, "Scheduling Single Click (Prev)");
+                        mPendingPrev = () -> {
+                            android.util.Log.d(LOG_TAG, "Firing Single Click (Prev)");
+                            mCallback.onPreviousSingle();
+                            mPendingPrev = null;
+                        };
+                        mHandler.postDelayed(mPendingPrev, DOUBLE_CLICK_DELAY);
+                    }
                 }
 
                 @Override

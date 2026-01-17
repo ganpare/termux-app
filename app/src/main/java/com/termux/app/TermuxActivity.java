@@ -1189,6 +1189,9 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         } else {
             displayItems.add("⚙️ コマンド管理・編集...");
             dataItems.add("ENTER_MANAGE");
+            // Also enable quick access to bookmark creation in execution mode
+            displayItems.add("🔖 ブックマーク作成");
+            dataItems.add("NEW_BOOKMARK");
         }
 
         // Folders
@@ -1224,6 +1227,8 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                         showCustomCommandsDialog(true);
                     } else if ("EXIT_MANAGE".equals(selected)) {
                         showCustomCommandsDialog(false);
+                    } else if ("NEW_BOOKMARK".equals(selected)) {
+                        showAddShortcutDialog(null);
                     } else if (selected instanceof CommandFolder) {
                         showFolderContentsDialog((CommandFolder) selected, manageMode);
                     } else if (selected instanceof CustomCommand) {
@@ -1253,6 +1258,9 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             displayItems.add("➕ このフォルダにコマンドを追加");
             displayItems.add("✏️ フォルダ名を変更");
             displayItems.add("🗑️ フォルダを削除");
+        } else {
+            // Allow entering manage mode from within the folder
+            displayItems.add("⚙️ 管理モード...");
         }
 
         for (CustomCommand cmd : commands) {
@@ -1260,7 +1268,8 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         }
 
         String[] items = displayItems.toArray(new String[0]);
-        String title = (manageMode ? "📁 [管理] " : "📁 ") + folder.getName();
+        // Update title to guide user
+        String title = (manageMode ? "📁 [管理: 項目タップで操作] " : "📁 ") + folder.getName();
 
         new AlertDialog.Builder(this)
                 .setTitle(title)
@@ -1277,7 +1286,14 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                             showCommandActionsDialog(cmd, folder.getId());
                         }
                     } else {
-                        CustomCommand cmd = commands.get(which);
+                        if (which == 0) {
+                            // Switch to manage mode
+                            showToast("管理モード: 項目をタップして編集・削除できます", false);
+                            showFolderContentsDialog(folder, true);
+                            return;
+                        }
+                        // Offset by 1 for the "Manage Mode" item
+                        CustomCommand cmd = commands.get(which - 1);
                         executeCustomCommand(cmd);
                     }
                 })
@@ -1388,7 +1404,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
 
         new AlertDialog.Builder(this)
                 .setTitle(cmd.getName())
-                .setMessage("コマンド: " + cmd.getCommand())
+                // .setMessage("コマンド: " + cmd.getCommand()) // Conflicts with setItems
                 .setItems(actions, (dialog, which) -> {
                     switch (which) {
                         case 0: // Execute
@@ -1443,6 +1459,212 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                 })
                 .setNegativeButton("キャンセル", null)
                 .show();
+    }
+
+    /**
+     * Show dialog to create a directory shortcut (bookmark).
+     * 
+     * @param preFilledPath Optional path to pre-fill. If null, attempts
+     *                      auto-detection.
+     */
+    private void showAddShortcutDialog(String preFilledPath) {
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        builder.setTitle("ディレクトリ・ブックマーク作成");
+
+        android.widget.LinearLayout layout = new android.widget.LinearLayout(this);
+        layout.setOrientation(android.widget.LinearLayout.VERTICAL);
+        int padding = (int) (16 * getResources().getDisplayMetrics().density);
+        layout.setPadding(padding, padding, padding, padding);
+
+        final android.widget.EditText nameInput = new android.widget.EditText(this);
+        nameInput.setHint("接続名 (例: My Server)");
+        layout.addView(nameInput);
+
+        final android.widget.EditText pathInput = new android.widget.EditText(this);
+        pathInput.setHint("移動先パス (例: /var/www/html)");
+        layout.addView(pathInput);
+
+        // Type Selection
+        final android.widget.RadioGroup typeGroup = new android.widget.RadioGroup(this);
+        typeGroup.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+
+        android.widget.RadioButton localBtn = new android.widget.RadioButton(this);
+        localBtn.setText("Local");
+        localBtn.setChecked(true); // Default
+        typeGroup.addView(localBtn);
+
+        android.widget.RadioButton sshBtn = new android.widget.RadioButton(this);
+        sshBtn.setText("SSH");
+        typeGroup.addView(sshBtn);
+        layout.addView(typeGroup);
+
+        // SSH Fields Container
+        final android.widget.LinearLayout sshLayout = new android.widget.LinearLayout(this);
+        sshLayout.setOrientation(android.widget.LinearLayout.VERTICAL);
+        sshLayout.setVisibility(View.GONE);
+
+        final android.widget.EditText hostInput = new android.widget.EditText(this);
+        hostInput.setHint("user@hostname");
+        sshLayout.addView(hostInput);
+
+        final android.widget.EditText portInput = new android.widget.EditText(this);
+        portInput.setHint("Port (Default: 22)");
+        portInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        sshLayout.addView(portInput);
+
+        layout.addView(sshLayout);
+
+        // Logic to show/hide SSH fields
+        typeGroup.setOnCheckedChangeListener((group, checkedId) -> {
+            boolean isSsh = sshBtn.isChecked();
+            if (isSsh) {
+                sshLayout.setVisibility(View.VISIBLE);
+            } else {
+                sshLayout.setVisibility(View.GONE);
+            }
+        });
+
+        // --- Auto-Detection / Pre-fill Logic ---
+        TerminalSession session = getCurrentSession();
+        if (session != null) {
+            String cwd = session.getCwd();
+            String title = session.getTitle();
+
+            // DEBUG: Show detected values
+            // android.widget.Toast.makeText(this, "Debug: CWD=" + cwd + "\nTitle=" + title,
+            // android.widget.Toast.LENGTH_LONG).show();
+
+            // 1. Path Pre-fill
+            if (preFilledPath != null) {
+                // Use the explicit path provided
+                pathInput.setText(preFilledPath);
+            } else if (cwd != null && !cwd.isEmpty()) {
+                // Auto-detect CWD
+                pathInput.setText(cwd);
+            }
+
+            // 2. SSH Detection: simplistic parsing of title
+            // Title format often: "ssh user@host" or just "user@host"
+            if (title != null) {
+                // Regex to find "user@host" potentially preceded by "ssh "
+                java.util.regex.Pattern p = java.util.regex.Pattern
+                        .compile("(?:ssh\\s+)?([^\\s@]+@[^\\s]+)(?:\\s+-p\\s+(\\d+))?");
+                java.util.regex.Matcher m = p.matcher(title);
+
+                if (m.find()) {
+                    String userHost = m.group(1);
+                    String port = m.group(2);
+
+                    // Fix: Strip trailing colon if present (e.g. from "user@host: dir")
+                    if (userHost != null && userHost.endsWith(":")) {
+                        userHost = userHost.substring(0, userHost.length() - 1);
+                    }
+
+                    sshBtn.setChecked(true); // Switch to SSH
+                    sshLayout.setVisibility(View.VISIBLE);
+
+                    if (userHost != null)
+                        hostInput.setText(userHost);
+                    if (port != null)
+                        portInput.setText(port);
+
+                    // Suggest a name
+                    nameInput.setText(userHost);
+
+                    // For SSH, if preFilledPath is NOT set but we detected SSH,
+                    // and CWD looks like local path, maybe reset to "~".
+                    // But if preFilledPath IS set (from dialog), we trust it even for SSH if user
+                    // is browsing remote.
+                    // (Note: Directory browser only works for local currently unless we mounted
+                    // remote?
+                    // Actually, Termux directory browser is local only. So if we are in SSH,
+                    // "Directory" button usually browses LOCAL files.
+                    // Wait, if user clicks "Directory" button, it shows LOCAL file system.
+                    // So this feature is mostly for LOCAL bookmarks.
+                    // BUT, if the user requested "SSH server current directory", that implies
+                    // they want to bookmark the REMOTE path.
+                    // If they use "Directory" button, they get local path.
+                    // So this change might NOT solve the "SSH Remote Path" issue if they use the
+                    // Directory button.
+                    // However, I implemented OSC 7 fix. So if they use "Create Bookmark" menu
+                    // (preFilledPath=null),
+                    // it should use session.getCwd() which now respects OSC 7.
+                    // If they use "Directory" button (preFilledPath=local), it will be local.
+                    // This seems acceptable as "Directory" button implies browsing local storage.)
+
+                    if (preFilledPath == null && cwd != null && cwd.startsWith("/data/data")) {
+                        pathInput.setText("~");
+                    }
+                }
+            }
+        }
+        // -----------------------------
+
+        builder.setView(layout);
+
+        builder.setPositiveButton("保存", (dialog, which) -> {
+            String name = nameInput.getText().toString().trim();
+            String path = pathInput.getText().toString().trim();
+
+            if (name.isEmpty()) {
+                showToast("名前を入力してください", true);
+                return;
+            }
+            if (path.isEmpty())
+                path = "~"; // Default to home if empty
+
+            String command;
+            if (sshBtn.isChecked()) {
+                String host = hostInput.getText().toString().trim();
+                String port = portInput.getText().toString().trim();
+
+                if (host.isEmpty()) {
+                    showToast("SSHホスト情報 (user@host) を入力してください", true);
+                    return;
+                }
+
+                StringBuilder cmdBuilder = new StringBuilder();
+                cmdBuilder.append("ssh -t ").append(host);
+                if (!port.isEmpty()) {
+                    cmdBuilder.append(" -p ").append(port);
+                }
+                // Command: cd /path ; exec $SHELL -l
+                cmdBuilder.append(" \"cd ").append(path).append("; exec \\$SHELL -l\"");
+
+                command = cmdBuilder.toString();
+            } else {
+                // Local: cd /path && clear
+                command = "cd " + path + "; clear";
+            }
+
+            // Save to "Bookmarks" folder
+            saveBookmarkCommand(name, command);
+        });
+
+        builder.setNegativeButton("キャンセル", null);
+        builder.show();
+    }
+
+    private void saveBookmarkCommand(String name, String command) {
+        if (mCustomCommandManager == null)
+            return;
+
+        // Find or create "Bookmarks" folder
+        String folderName = "Bookmarks";
+        com.termux.app.customcmd.CommandFolder folder = null;
+        for (com.termux.app.customcmd.CommandFolder f : mCustomCommandManager.getAllFolders()) {
+            if (f.getName().equals(folderName)) {
+                folder = f;
+                break;
+            }
+        }
+
+        if (folder == null) {
+            folder = mCustomCommandManager.createFolder(folderName);
+        }
+
+        mCustomCommandManager.saveCommand(name, command, folder.getId());
+        showToast("ブックマークを保存しました: " + name, false);
     }
 
     /**
@@ -1791,8 +2013,9 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             return;
         }
 
-        // Save SSH host for Claude HTTP server connection
-        mCurrentSshHost = config.getHost();
+        // Save SSH host for Claude HTTP server connection - REMOVED (Use
+        // auto-detection)
+        // mCurrentSshHost = config.getHost();
 
         String sshCommand = config.buildSshCommand();
 
@@ -2357,6 +2580,9 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                 .setPositiveButton("✓ ここに決定", (dialog, which) -> {
                     showToast("現在地: " + currentPath, false);
                 })
+                .setNeutralButton("🔖 ブックマーク", (dialog, which) -> {
+                    showAddShortcutDialog(currentPath);
+                })
                 .setNegativeButton("キャンセル", (dialog, which) -> {
                     // Go back to original directory? For now just close
                 })
@@ -2436,8 +2662,10 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
      * User inputs query, app sends to terminal and watches for file changes.
      */
     private void showAutoArSyncDialog() {
+        detectAndSetSshHost(); // Try to detect host from title before checking
+
         if (mCurrentSshHost == null || mCurrentSshHost.isEmpty()) {
-            showToast("SSH接続が必要です", true);
+            showToast("SSH接続が必要です (タイトルから検出できませんでした)", true);
             return;
         }
 
@@ -2597,14 +2825,63 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     }
 
     /**
+     * Parse session title to detect SSH host and update mCurrentSshHost.
+     */
+    private void detectAndSetSshHost() {
+        TerminalSession session = getCurrentSession();
+        if (session == null)
+            return;
+
+        // 1. Check OSC 7 Hostname (Best source)
+        String oscHost = session.getCwdHost();
+        if (oscHost != null && !oscHost.isEmpty()) {
+            if (!oscHost.equals(mCurrentSshHost)) {
+                mCurrentSshHost = oscHost;
+                showToast("OSC7からホストを検出: " + mCurrentSshHost, false);
+            }
+            return;
+        }
+
+        String title = session.getTitle();
+        if (title == null)
+            return;
+
+        // Regex to find "user@host" potentially preceded by "ssh "
+        java.util.regex.Pattern p = java.util.regex.Pattern
+                .compile("(?:ssh\\s+)?([^\\s@]+@[^\\s]+)(?:\\s+-p\\s+(\\d+))?");
+        java.util.regex.Matcher m = p.matcher(title);
+
+        if (m.find()) {
+            String userHost = m.group(1);
+            if (userHost != null) {
+                // Fix: Strip trailing colon if present (e.g. from "user@host: dir")
+                if (userHost.endsWith(":")) {
+                    userHost = userHost.substring(0, userHost.length() - 1);
+                }
+
+                // Extract host from user@host
+                int atIndex = userHost.indexOf('@');
+                String host = (atIndex >= 0) ? userHost.substring(atIndex + 1) : userHost;
+
+                if (!host.isEmpty() && !host.equals(mCurrentSshHost)) {
+                    mCurrentSshHost = host;
+                    showToast("SSHホストを検出: " + mCurrentSshHost, false);
+                }
+            }
+        }
+    }
+
+    /**
      * Opens AR View for the latest conversation history with Turso synchronization.
      */
     /**
      * Opens AR View after allowing user to select a session from the server.
      */
     private void openArViewIfAvailable() {
+        detectAndSetSshHost(); // Try to detect host from title before checking
+
         if (mCurrentSshHost == null || mCurrentSshHost.isEmpty()) {
-            showToast("SSHホストが設定されていません", true);
+            showToast("SSHホストが設定されていません (タイトルから検出できませんでした)", true);
             return;
         }
 
@@ -2960,7 +3237,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             // Start Media Session for background control
             mMediaControlManager.start(new MediaControlManager.MediaControlCallback() {
                 @Override
-                public void onNext() {
+                public void onNextSingle() {
                     runOnUiThread(() -> {
                         try {
                             pager.nextPage(null);
@@ -2972,7 +3249,14 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                 }
 
                 @Override
-                public void onPrevious() {
+                public void onNextDouble() {
+                    runOnUiThread(() -> {
+                        navigateTurn(1);
+                    });
+                }
+
+                @Override
+                public void onPreviousSingle() {
                     runOnUiThread(() -> {
                         try {
                             pager.prevPage(null);
@@ -2980,6 +3264,13 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                         } catch (Exception e) {
                             showToast("前ページエラー: " + e.getMessage(), true);
                         }
+                    });
+                }
+
+                @Override
+                public void onPreviousDouble() {
+                    runOnUiThread(() -> {
+                        navigateTurn(-1);
                     });
                 }
             });
