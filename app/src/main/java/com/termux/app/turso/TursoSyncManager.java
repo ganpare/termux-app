@@ -133,7 +133,7 @@ public class TursoSyncManager {
 
             while ((line = br.readLine()) != null) {
                 lineNo++;
-                if (lineNo <= startLine)
+                if (lineNo < startLine)
                     continue;
                 if (line.trim().isEmpty())
                     continue;
@@ -157,7 +157,7 @@ public class TursoSyncManager {
                 rawArgs.add(type);
                 rawArgs.add(line);
                 client.executeSync(
-                        "INSERT INTO raw_jsonl_lines (session_id, line_no, ts, uuid, type, raw_json) VALUES (?, ?, ?, ?, ?, ?)",
+                        "INSERT OR REPLACE INTO raw_jsonl_lines (session_id, line_no, ts, uuid, type, raw_json) VALUES (?, ?, ?, ?, ?, ?)",
                         rawArgs);
 
                 // Process Turn
@@ -270,6 +270,11 @@ public class TursoSyncManager {
                                 }
                             }
 
+                            // Prune existing entries for this assistant UUID (update scenario)
+                            List<Object> delArgs = new ArrayList<>();
+                            delArgs.add(uuid);
+                            client.executeSync("DELETE FROM assistant_texts WHERE assistant_uuid = ?", delArgs);
+
                             for (int i = 0; i < content.length(); i++) {
                                 JSONObject part = content.optJSONObject(i);
                                 String textToInsert = null;
@@ -278,11 +283,10 @@ public class TursoSyncManager {
                                 if ("text".equals(typePart)) {
                                     textToInsert = part.optString("text");
                                 } else if ("tool_use".equals(typePart)) {
-                                    // Skip tool_use for cleaner AR view as requested by user
-                                    // String toolName = part.optString("name");
-                                    // JSONObject input = part.optJSONObject("input");
-                                    // textToInsert = String.format("[Tool: %s input=%s]", toolName, input != null ?
-                                    // input.toString() : "{}");
+                                    // Enable tool_use for AR visibility
+                                    String toolName = part.optString("name");
+                                    JSONObject input = part.optJSONObject("input");
+                                    textToInsert = String.format("\n[Tool: %s]", toolName);
                                 }
 
                                 if (textToInsert != null) {

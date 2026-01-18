@@ -21,6 +21,7 @@ public class MediaControlManager {
     private Handler mHandler;
     private Runnable mPendingNext;
     private Runnable mPendingPrev;
+    private Runnable mPendingPlayPause;
     private static final int DOUBLE_CLICK_DELAY = 300;
     private MediaControlCallback mCallback;
 
@@ -32,6 +33,10 @@ public class MediaControlManager {
         void onPreviousSingle();
 
         void onPreviousDouble();
+
+        void onPlayPauseSingle();
+
+        void onPlayPauseDouble();
     }
 
     public MediaControlManager(Context context) {
@@ -112,13 +117,13 @@ public class MediaControlManager {
                 @Override
                 public void onPlay() {
                     super.onPlay();
-                    // Keep active
+                    handlePlayPause();
                 }
 
                 @Override
                 public void onPause() {
                     super.onPause();
-                    // Allow pause but we typically want to stay active for this feature
+                    handlePlayPause();
                 }
             });
 
@@ -143,5 +148,26 @@ public class MediaControlManager {
 
         mCallback = null;
         Logger.logDebug(LOG_TAG, "Media Session stopped");
+    }
+
+    private void handlePlayPause() {
+        android.util.Log.d(LOG_TAG, "onPlayPause triggered");
+        if (mCallback == null)
+            return;
+
+        if (mPendingPlayPause != null) {
+            android.util.Log.d(LOG_TAG, "Double Click Detected (Play/Pause)");
+            mHandler.removeCallbacks(mPendingPlayPause);
+            mPendingPlayPause = null;
+            mCallback.onPlayPauseDouble();
+        } else {
+            android.util.Log.d(LOG_TAG, "Scheduling Single Click (Play/Pause)");
+            mPendingPlayPause = () -> {
+                android.util.Log.d(LOG_TAG, "Firing Single Click (Play/Pause)");
+                mCallback.onPlayPauseSingle();
+                mPendingPlayPause = null;
+            };
+            mHandler.postDelayed(mPendingPlayPause, DOUBLE_CLICK_DELAY);
+        }
     }
 }

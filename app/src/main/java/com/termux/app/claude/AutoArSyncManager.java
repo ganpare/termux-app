@@ -61,6 +61,10 @@ public class AutoArSyncManager {
             "考え中 ......",
     };
 
+    // Debug counters
+    private int debugMtimeUpdates = 0;
+    private int debugTextSame = 0;
+
     /**
      * Callback interface for sync events.
      */
@@ -129,19 +133,39 @@ public class AutoArSyncManager {
                     @Override
                     public void onSuccess(String localPath) {
                         ClaudeChatParser.AgentComment comment = ClaudeChatParser.getLatestAgentComment(localPath);
-                        initialLatestComment = comment != null ? comment.text : null;
 
-                        android.util.Log.d("AutoArSync", "Initial latest comment: " +
-                                (initialLatestComment != null
-                                        ? initialLatestComment.substring(0, Math.min(50, initialLatestComment.length()))
-                                                + "..."
-                                        : "null"));
+                        boolean isInProgress = comment != null && !"end_turn".equals(comment.stopReason);
 
-                        // Step 2: Send query to terminal
+                        if (isInProgress) {
+                            // If already in progress, don't suppress it!
+                            // Treat as if we have no baseline, so the first poll will see it as "New" (or
+                            // handle in poll).
+                            // Actually, better to just NOT set initialLatestComment here if it's in
+                            // progress,
+                            // OR set it but rely on poll to handle "initial==null" logic.
+
+                            // If we leave initialLatestComment as null, the poll loop will enter "if
+                            // (initial == null)".
+                            // We need that block to handle "InProgress" differently.
+                            initialLatestComment = null;
+                            android.util.Log.d("AutoArSync", "Initial message is IN PROGRESS, allowing display.");
+                        } else {
+                            initialLatestComment = comment != null ? comment.text : null;
+                            android.util.Log.d("AutoArSync", "Initial latest comment (Completed): " +
+                                    (initialLatestComment != null
+                                            ? initialLatestComment.substring(0,
+                                                    Math.min(50, initialLatestComment.length()))
+                                                    + "..."
+                                            : "null"));
+                        }
+
+                        // Step 2: Send query to terminal (if provided)
                         mainHandler.post(() -> {
-                            String fullQuery = query + "\n";
-                            byte[] data = fullQuery.getBytes();
-                            session.write(data, 0, data.length);
+                            if (query != null && !query.isEmpty()) {
+                                String fullQuery = query + "\n";
+                                byte[] data = fullQuery.getBytes();
+                                session.write(data, 0, data.length);
+                            }
                             callback.onWatchStarted();
                         });
 
@@ -261,9 +285,11 @@ public class AutoArSyncManager {
         int maxPolls = MAX_POLL_TIME_MS / POLL_INTERVAL_MS;
         int pageNum = Math.min(pollCount, maxPolls);
 
+        String debugStatus = "Poll:" + pollCount + " M:" + debugMtimeUpdates + " S:" + debugTextSame;
+
         EvenG1Protocol.sendText(
                 EvenG1Manager.getInstance(),
-                frame,
+                frame + "\n" + debugStatus,
                 mainHandler,
                 new EvenG1Protocol.TextSendCallback() {
                     @Override
@@ -301,17 +327,39 @@ public class AutoArSyncManager {
                             return;
                         }
 
+                        android.util.Log.d("AutoArSync", "Comparing: Init=" +
+                                (initialLatestComment == null ? "null" : initialLatestComment.length() + " chars") +
+                                " vs Curr=" + currentLatestText.length() + " chars");
+
                         // Compare with initial comment
                         if (initialLatestComment == null) {
-                            // First successful fetch after failed initialization (or brand new chat).
-                            // Assume this is the baseline and do NOT display yet to avoid showing old chat.
-                            android.util.Log.d("AutoArSync", "Initializing baseline comment: " +
-                                    (currentLatestText != null
-                                            ? currentLatestText.substring(0, Math.min(20, currentLatestText.length()))
-                                            : "null"));
-                            initialLatestComment = currentLatestText;
+                            // First successful fetch after failed initialization OR intentional null from
+                            // startWatching (in-progress).
 
-                            // Continue polling for actual new changes
+                            boolean isFinal = "end_turn".equals(latestComment.stopReason);
+
+                            if (isFinal) {
+                                // It's a finished message. Assume it's the OLD one (baseline).
+                                // Do NOT display.
+                                android.util.Log.d("AutoArSync", "Initializing baseline (Completed): " +
+                                        (currentLatestText != null
+                                                ? currentLatestText.substring(0,
+                                                        Math.min(20, currentLatestText.length()))
+                                                : "null"));
+                                initialLatestComment = currentLatestText;
+                            } else {
+                                // It is IN PROGRESS! Display it immediately.
+                                android.util.Log.d("AutoArSync",
+                                        "Detected IN PROGRESS message on first check. Displaying.");
+                                initialLatestComment = currentLatestText;
+                                hasDisplayedContent = true;
+                                debugMtimeUpdates++; // Mark as detected
+
+                                // Sync to Turso and AR
+                                mainHandler.post(() -> callback.onSyncComplete(localPath, currentLatestText));
+                            }
+
+                            // Continue polling for further updates
                             scheduleNextPoll(callback);
                             return;
                         }
@@ -319,6 +367,7 @@ public class AutoArSyncManager {
                         if (!currentLatestText.equals(initialLatestComment)) {
                             // Assistant message has changed!
                             android.util.Log.d("AutoArSync", "Assistant message changed!");
+                            debugMtimeUpdates++;
 
                             // Check stop reason
                             boolean isFinal = "end_turn".equals(latestComment.stopReason);
@@ -332,9 +381,11 @@ public class AutoArSyncManager {
 
                             if (isFinal) {
                                 isWatching.set(false);
+                                // Sync to Turso BEFORE notifying finish
+                                mainHandler.post(() -> callback.onSyncComplete(localPath, currentLatestText));
                                 mainHandler.post(callback::onFileChanged); // Notify finish
                             } else {
-                                // Update tracker and continue polling
+                                // Update tracker and continue polling (don't sync intermediate results)
                                 initialLatestComment = currentLatestText;
                                 // Update initialMtime
                                 try {
@@ -345,15 +396,14 @@ public class AutoArSyncManager {
                                 } catch (Exception e) {
                                 }
 
-                                // Notify about update so we can sync to Turso
-                                mainHandler.post(() -> callback.onSyncComplete(localPath, currentLatestText));
-
+                                // Just continue polling - no sync until final
                                 scheduleNextPoll(callback);
                             }
 
                         } else {
                             // Assistant message hasn't changed (probably just user message added)
                             android.util.Log.d("AutoArSync", "Assistant message unchanged, continuing to poll");
+                            debugTextSame++;
                             // Update initialMtime to avoid re-checking the same change
                             try {
                                 JSONObject info = fetchLatestInfo();

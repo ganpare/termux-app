@@ -46,6 +46,7 @@ public class ClaudeHistoryHttpClient {
      */
     public interface HealthCallback {
         void onSuccess(String cwd);
+
         void onError(String message);
     }
 
@@ -54,6 +55,7 @@ public class ClaudeHistoryHttpClient {
      */
     public interface FileListCallback {
         void onSuccess(String cwd, String project, List<RemoteFile> files);
+
         void onError(String message);
     }
 
@@ -62,6 +64,7 @@ public class ClaudeHistoryHttpClient {
      */
     public interface DownloadCallback {
         void onSuccess(String localPath);
+
         void onError(String message);
     }
 
@@ -84,8 +87,10 @@ public class ClaudeHistoryHttpClient {
         }
 
         private String formatFileSize(long bytes) {
-            if (bytes < 1024) return bytes + "B";
-            if (bytes < 1024 * 1024) return (bytes / 1024) + "KB";
+            if (bytes < 1024)
+                return bytes + "B";
+            if (bytes < 1024 * 1024)
+                return (bytes / 1024) + "KB";
             return String.format(Locale.US, "%.1fMB", bytes / (1024.0 * 1024.0));
         }
     }
@@ -98,12 +103,12 @@ public class ClaudeHistoryHttpClient {
             try {
                 String response = httpGet("/health");
                 JSONObject json = new JSONObject(response);
-                
+
                 if (json.has("error")) {
                     postError(callback, json.getString("error"));
                     return;
                 }
-                
+
                 String cwd = json.optString("cwd", "unknown");
                 mainHandler.post(() -> callback.onSuccess(cwd));
             } catch (Exception e) {
@@ -120,27 +125,26 @@ public class ClaudeHistoryHttpClient {
             try {
                 String response = httpGet("/api/files/current");
                 JSONObject json = new JSONObject(response);
-                
+
                 if (json.has("error")) {
                     postError(callback, json.getString("error"));
                     return;
                 }
-                
+
                 String cwd = json.getString("cwd");
                 String project = json.getString("project");
                 JSONArray filesArray = json.getJSONArray("files");
-                
+
                 List<RemoteFile> files = new ArrayList<>();
                 for (int i = 0; i < filesArray.length(); i++) {
                     JSONObject f = filesArray.getJSONObject(i);
                     files.add(new RemoteFile(
-                        f.getString("name"),
-                        f.getString("path"),
-                        f.getLong("size"),
-                        f.getDouble("mtime")
-                    ));
+                            f.getString("name"),
+                            f.getString("path"),
+                            f.getLong("size"),
+                            f.getDouble("mtime")));
                 }
-                
+
                 mainHandler.post(() -> callback.onSuccess(cwd, project, files));
             } catch (Exception e) {
                 postError(callback, "ファイル一覧取得エラー: " + e.getMessage());
@@ -189,7 +193,7 @@ public class ClaudeHistoryHttpClient {
         try {
             int responseCode = conn.getResponseCode();
             InputStream is = (responseCode >= 400) ? conn.getErrorStream() : conn.getInputStream();
-            
+
             BufferedReader reader = new BufferedReader(new InputStreamReader(is));
             StringBuilder sb = new StringBuilder();
             String line;
@@ -208,6 +212,7 @@ public class ClaudeHistoryHttpClient {
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setConnectTimeout(CONNECT_TIMEOUT);
         conn.setReadTimeout(READ_TIMEOUT);
+        conn.setUseCaches(false);
         conn.setRequestMethod("GET");
 
         try {
@@ -221,7 +226,7 @@ public class ClaudeHistoryHttpClient {
                     sb.append(line);
                 }
                 reader.close();
-                
+
                 try {
                     JSONObject json = new JSONObject(sb.toString());
                     throw new IOException(json.optString("error", "HTTP " + responseCode));
@@ -229,7 +234,7 @@ public class ClaudeHistoryHttpClient {
                     throw new IOException("HTTP " + responseCode);
                 }
             }
-            
+
             InputStream is = conn.getInputStream();
             java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
             byte[] buffer = new byte[8192];

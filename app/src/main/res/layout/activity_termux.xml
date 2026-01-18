@@ -111,6 +111,19 @@
         android:layout_marginHorizontal="8dp"
         android:layout_marginBottom="4dp">
 
+        <TextView
+            android:id="@+id/ar_sync_status_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="AR Sync: Standby"
+            android:textSize="12sp"
+            android:textColor="#FFFFFF"
+            android:background="#80000000"
+            android:padding="4dp"
+            android:gravity="center"
+            android:visibility="gone"
+            android:layout_marginBottom="4dp" />
+
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -122,9 +135,11 @@
                 android:layout_weight="1"
                 android:layout_height="48dp"
                 android:text="SESSIONS"
-                android:textSize="14sp"
+                android:textSize="12sp"
                 android:backgroundTint="#2196F3"
-                android:layout_marginEnd="4dp" />
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:layout_marginEnd="1dp" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/customCommandsButton"
@@ -132,10 +147,11 @@
                 android:layout_weight="1"
                 android:layout_height="48dp"
                 android:text="CUSTOM"
-                android:textSize="14sp"
+                android:textSize="12sp"
                 android:backgroundTint="#FF5722"
-                android:layout_marginStart="4dp"
-                android:layout_marginEnd="4dp" />
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:layout_marginHorizontal="1dp" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/byobuCommandsButton"
@@ -143,9 +159,11 @@
                 android:layout_weight="1"
                 android:layout_height="48dp"
                 android:text="HELP"
-                android:textSize="14sp"
+                android:textSize="12sp"
                 android:backgroundTint="#9C27B0"
-                android:layout_marginStart="4dp" />
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:layout_marginStart="1dp" />
 
         </LinearLayout>
 
@@ -153,7 +171,31 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
-            android:layout_marginTop="4dp">
+            android:layout_marginTop="2dp">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/previousSessionButton"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="48dp"
+                android:text="Prev"
+                android:textSize="12sp"
+                android:backgroundTint="#607D8B"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:layout_marginEnd="1dp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/nextSessionButton"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="48dp"
+                android:text="Next"
+                android:textSize="12sp"
+                android:backgroundTint="#607D8B"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:layout_marginHorizontal="1dp" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/sshConnectButton"
@@ -161,19 +203,23 @@
                 android:layout_weight="1"
                 android:layout_height="48dp"
                 android:text="SSH"
-                android:textSize="14sp"
+                android:textSize="12sp"
                 android:backgroundTint="#4CAF50"
-                android:layout_marginEnd="4dp" />
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:layout_marginHorizontal="1dp" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/sshManageButton"
                 android:layout_width="0dp"
                 android:layout_weight="1"
                 android:layout_height="48dp"
-                android:text="SSH設定"
-                android:textSize="14sp"
+                android:text="設定"
+                android:textSize="12sp"
                 android:backgroundTint="#9E9E9E"
-                android:layout_marginStart="4dp" />
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:layout_marginStart="1dp" />
 
         </LinearLayout>
 
@@ -181,33 +227,31 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
-            android:layout_marginTop="4dp">
+            android:layout_marginTop="2dp">
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/evenG1ConnectButton"
-                android:layout_width="match_parent"
+                android:layout_width="0dp"
+                android:layout_weight="1"
                 android:layout_height="48dp"
-                android:text="G1接続"
-                android:textSize="14sp"
-                android:backgroundTint="#E91E63" />
+                android:text="G1"
+                android:textSize="12sp"
+                android:backgroundTint="#E91E63"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:layout_marginEnd="1dp" />
 
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginTop="4dp">
-
-            <com.google.android.material.button.MaterialButton
+             <com.google.android.material.button.MaterialButton
                 android:id="@+id/dirNavButton"
                 android:layout_width="0dp"
                 android:layout_weight="1"
                 android:layout_height="48dp"
                 android:text="DIR"
-                android:textSize="14sp"
+                android:textSize="12sp"
                 android:backgroundTint="#FF9800"
-                android:layout_marginEnd="4dp" />
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:layout_marginHorizontal="1dp" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/aiAssistantButton"
@@ -215,9 +259,11 @@
                 android:layout_weight="1"
                 android:layout_height="48dp"
                 android:text="AI"
-                android:textSize="14sp"
+                android:textSize="12sp"
                 android:backgroundTint="#673AB7"
-                android:layout_marginHorizontal="2dp" />
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:layout_marginHorizontal="1dp" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/claudeSyncButton"
@@ -225,9 +271,11 @@
                 android:layout_weight="1"
                 android:layout_height="48dp"
                 android:text="CLAUDE"
-                android:textSize="14sp"
+                android:textSize="12sp"
                 android:backgroundTint="#2196F3"
-                android:layout_marginStart="4dp" />
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:layout_marginStart="1dp" />
 
         </LinearLayout>
 

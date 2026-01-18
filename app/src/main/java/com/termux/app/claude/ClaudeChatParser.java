@@ -87,6 +87,11 @@ public class ClaudeChatParser {
                                 sb.append(text);
                                 hasText = true;
                             }
+                        } else if (contentItem.has("type") && contentItem.getString("type").equals("tool_use")) {
+                            if (contentItem.has("name")) {
+                                sb.append("\n[Tool: ").append(contentItem.getString("name")).append("]");
+                                hasText = true;
+                            }
                         }
                     }
 

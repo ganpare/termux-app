@@ -64,6 +64,8 @@ import com.termux.app.media.MediaControlManager;
 import com.termux.app.ai.AiSettingsManager;
 import com.termux.app.turso.TursoSyncManager;
 import com.termux.app.ai.LlmClient;
+import com.termux.app.ai.VoiceInputManager;
+import com.termux.app.ai.VoiceInputManager.InputState;
 import com.termux.app.terminal.TermuxActivityRootView;
 import com.termux.app.terminal.TermuxTerminalSessionActivityClient;
 import com.termux.app.terminal.io.TermuxTerminalExtraKeys;
@@ -368,8 +370,11 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         // Set Claude conversation sync button
         setClaudeSyncButton();
 
+        mArSyncStatusText = findViewById(R.id.ar_sync_status_text);
+
         // Set AI Assistant button
         setAiAssistantButton();
+        setSessionNavigationButtons();
 
         // Set EVEN G1 AR Glasses buttons
         setEvenG1Buttons();
@@ -440,6 +445,77 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         mLlmClient = new LlmClient(mAiSettingsManager.getBaseUrlForProvider(mAiSettingsManager.getProvider()));
         mTursoSyncManager = new TursoSyncManager(this);
         mTursoSyncManager.initializeDb(null);
+
+        // Initialize Voice Input Manager
+        mVoiceInputManager = new VoiceInputManager(this, mAiSettingsManager,
+                new VoiceInputManager.VoiceInputCallback() {
+                    @Override
+                    public void onStateChanged(InputState newState) {
+                        if (mCurrentArPager != null) {
+                            String status = "";
+                            String help = "";
+                            switch (newState) {
+                                case IDLE:
+                                    status = "Ready";
+                                    help = "Tap Play to Start";
+                                    break;
+                                case LISTENING:
+                                    status = "🎤 Listening...";
+                                    help = "Tap Play to Stop";
+                                    break;
+                                case CONFIRMING:
+                                    return; // Handled by onTextRecognized
+                            }
+                            if (!status.isEmpty()) {
+                                mCurrentArPager.updateText(status + "\n\n" + help);
+                                mCurrentArPager.sendCurrentPage(null);
+                                if (mActiveArDialog != null && mActiveArDialog.isShowing()) {
+                                    updateArDialogUI(mActiveArDialog, mCurrentArPager);
+                                }
+                            }
+                        }
+                    }
+
+                    @Override
+                    public void onTextRecognized(String text) {
+                        if (mCurrentArPager != null) {
+                            mCurrentArPager.updateText(
+                                    ("Recognized:\n" + text + "\n---\nDouble Tap: Send\nSingle Tap: Retry").trim());
+                            mCurrentArPager.sendCurrentPage(null);
+                            if (mActiveArDialog != null && mActiveArDialog.isShowing()) {
+                                updateArDialogUI(mActiveArDialog, mCurrentArPager);
+                            }
+                        }
+                    }
+
+                    @Override
+                    public void onInputConfirmed(String text) {
+                        TerminalSession session = getCurrentSession();
+                        if (session != null) {
+                            session.write(text);
+                            session.write("\r");
+                        }
+                        if (mCurrentArPager != null) {
+                            mCurrentArPager.updateText(("Sent!\n" + text).trim());
+                            mCurrentArPager.sendCurrentPage(null);
+                            if (mActiveArDialog != null && mActiveArDialog.isShowing()) {
+                                updateArDialogUI(mActiveArDialog, mCurrentArPager);
+                            }
+                        }
+                    }
+
+                    @Override
+                    public void onError(String message) {
+                        if (mCurrentArPager != null) {
+                            mCurrentArPager.updateText("Error:\n" + message);
+                            mCurrentArPager.sendCurrentPage(null);
+                            if (mActiveArDialog != null && mActiveArDialog.isShowing()) {
+                                updateArDialogUI(mActiveArDialog, mCurrentArPager);
+                            }
+                        }
+                        showToast(message, true);
+                    }
+                });
     }
 
     @Override
@@ -2645,6 +2721,28 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         aiButton.setOnClickListener(v -> showAiInteractionDialog());
     }
 
+    /**
+     * Set up Next/Previous Session buttons.
+     */
+    private void setSessionNavigationButtons() {
+        View nextButton = findViewById(R.id.nextSessionButton);
+        View prevButton = findViewById(R.id.previousSessionButton);
+
+        if (nextButton != null) {
+            nextButton.setOnClickListener(v -> {
+                if (mTermuxTerminalSessionActivityClient != null)
+                    mTermuxTerminalSessionActivityClient.switchToSession(true);
+            });
+        }
+
+        if (prevButton != null) {
+            prevButton.setOnClickListener(v -> {
+                if (mTermuxTerminalSessionActivityClient != null)
+                    mTermuxTerminalSessionActivityClient.switchToSession(false);
+            });
+        }
+    }
+
     // Claude history server settings
     private static final int CLAUDE_SERVER_PORT = 8765;
     private String mCurrentSshHost = ""; // SSH host for HTTP server connection
@@ -2652,10 +2750,26 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     // AutoArSyncManager instance
     private AutoArSyncManager mAutoArSyncManager;
     private MediaControlManager mMediaControlManager; // For media button control
+    private VoiceInputManager mVoiceInputManager; // For voice input pipeline
     private AlertDialog mActiveArDialog; // Track active AR dialog
     private AiSettingsManager mAiSettingsManager;
     private LlmClient mLlmClient;
     private TursoSyncManager mTursoSyncManager;
+    private android.widget.TextView mArSyncStatusText;
+
+    private void updateArSyncStatus(String status) {
+        if (mArSyncStatusText == null)
+            return;
+
+        runOnUiThread(() -> {
+            if (status == null || status.isEmpty()) {
+                mArSyncStatusText.setVisibility(View.GONE);
+                return;
+            }
+            mArSyncStatusText.setVisibility(View.VISIBLE);
+            mArSyncStatusText.setText(status);
+        });
+    }
 
     /**
      * Shows dialog for automatic AR sync.
@@ -2694,75 +2808,57 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             return;
         }
 
-        // Create input dialog
-        android.widget.EditText input = new android.widget.EditText(this);
-        input.setHint("Claudeに送るクエリを入力...");
-        input.setMinLines(3);
-        input.setGravity(android.view.Gravity.TOP);
-
-        // Add padding
-        int padding = (int) (16 * getResources().getDisplayMetrics().density);
-        android.widget.FrameLayout container = new android.widget.FrameLayout(this);
-        android.widget.FrameLayout.LayoutParams params = new android.widget.FrameLayout.LayoutParams(
-                android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
-                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT);
-        params.setMargins(padding, padding / 2, padding, 0);
-        input.setLayoutParams(params);
-        container.addView(input);
-
-        new AlertDialog.Builder(this)
-                .setTitle("🤖 Claude→AR 自動同期")
-                .setMessage("クエリを送信後、Claudeの応答を自動でARに表示します\n(最大10分間監視)")
-                .setView(container)
-                .setPositiveButton("送信→AR", (dialog, which) -> {
-                    String query = input.getText().toString().trim();
-                    if (query.isEmpty()) {
-                        showToast("クエリを入力してください", true);
-                        return;
-                    }
-                    startAutoArSync(session, query);
-                })
-                .setNegativeButton("キャンセル", null)
-                .show();
+        // Directly start monitoring without query input
+        startAutoArSync(session, null);
     }
 
     /**
      * Starts automatic AR sync process.
      */
     private void startAutoArSync(TerminalSession session, String query) {
+        if (mVoiceInputManager != null) {
+            mVoiceInputManager.cancel();
+        }
+        if (mAutoArSyncManager != null) {
+            mAutoArSyncManager.stopWatching();
+        }
         mAutoArSyncManager = new AutoArSyncManager(mCurrentSshHost, CLAUDE_SERVER_PORT);
 
         mAutoArSyncManager.startWatching(session, query, new AutoArSyncManager.SyncCallback() {
             @Override
             public void onWatchStarted() {
                 showToast("クエリ送信、監視開始...", false);
+                updateArSyncStatus("監視開始: 応答待機中...");
             }
 
             @Override
             public void onPolling(int count, int remainingSeconds) {
-                // Update status (optional: could show in a persistent notification)
+                // Update status
+                updateArSyncStatus("監視中 #" + count + " (残り " + remainingSeconds + "s)");
                 android.util.Log.d("AutoArSync", "Polling #" + count + ", remaining: " + remainingSeconds + "s");
             }
 
             @Override
             public void onFileChanged() {
+                updateArSyncStatus("更新検出: ダウンロード中...");
                 showToast("ファイル更新検出！ダウンロード中...", false);
-                // When file changed successfully, we usually want to show the content.
-                // The onSyncComplete will handle the Turso sync and then call
-                // showAutoArPagerDialog.
             }
 
             @Override
             public void onStatusChanged(String status) {
+                // General status updates from manager
+                updateArSyncStatus(status);
                 android.util.Log.d("AutoArSync", "Status: " + status);
             }
 
             @Override
             public void onSyncComplete(String filePath, String content) {
+                updateArSyncStatus("ローカル更新完了. DB同期中...");
                 showToast("AR同期中...", false);
                 // Sync to Turso (Always sync)
                 if (mTursoSyncManager != null) {
                     mTursoSyncManager.sync(filePath, () -> {
+                        updateArSyncStatus("DB同期完了. 最新件取得中...");
                         // After sync completes, fetch latest message from Turso
                         mTursoSyncManager.getLastAssistantMessage(new java.io.File(filePath).getName(),
                                 new com.termux.app.turso.TursoSyncManager.MessageCallback() {
@@ -2770,9 +2866,17 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                                     public void onResult(String message) {
                                         runOnUiThread(() -> {
                                             if (message != null && !message.trim().isEmpty()) {
+                                                updateArSyncStatus("AR表示完了");
                                                 showAutoArPagerDialog(message);
                                                 showToast("AR表示完了 (from Turso)", false);
+
+                                                // Optional: Revert to monitoring status if still watching?
+                                                // But sync complete usually means we wait for NEXT poling?
+                                                // Actually onSyncComplete is called, then scheduleNextPoll is called in
+                                                // manager.
+                                                // So onPolling will update status soon.
                                             } else {
+                                                updateArSyncStatus("DB取得結果なし");
                                                 android.util.Log.d("AutoArSync", "Turso returned empty message");
                                             }
                                         });
@@ -2780,7 +2884,10 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
 
                                     @Override
                                     public void onError(String error) {
-                                        runOnUiThread(() -> showToast("Turso取得エラー: " + error, true));
+                                        runOnUiThread(() -> {
+                                            updateArSyncStatus("DB取得エラー: " + error);
+                                            showToast("Turso取得エラー: " + error, true);
+                                        });
                                     }
                                 });
                     });
@@ -2789,11 +2896,13 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
 
             @Override
             public void onTimeout() {
+                updateArSyncStatus("タイムアウト");
                 showToast("タイムアウト（10分経過）", true);
             }
 
             @Override
             public void onError(String message) {
+                updateArSyncStatus("エラー: " + message);
                 showToast("エラー: " + message, true);
             }
         });
@@ -2846,13 +2955,21 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         if (title == null)
             return;
 
-        // Regex to find "user@host" potentially preceded by "ssh "
+        // Regex to find "user@host" or "ssh host"
+        // Case 1: "ssh user@host" or "ssh host"
+        // Case 2: "user@host" (implicit ssh)
         java.util.regex.Pattern p = java.util.regex.Pattern
-                .compile("(?:ssh\\s+)?([^\\s@]+@[^\\s]+)(?:\\s+-p\\s+(\\d+))?");
+                .compile("(?:ssh\\s+(?:[^\\s@]+@)?([^\\s]+))|([^\\s@]+@[^\\s]+)");
         java.util.regex.Matcher m = p.matcher(title);
 
         if (m.find()) {
+            // Group 1: host from "ssh [user@]host"
+            // Group 2: user@host from "user@host"
             String userHost = m.group(1);
+            if (userHost == null) {
+                userHost = m.group(2);
+            }
+
             if (userHost != null) {
                 // Fix: Strip trailing colon if present (e.g. from "user@host: dir")
                 if (userHost.endsWith(":")) {
@@ -3267,10 +3384,41 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                     });
                 }
 
-                @Override
                 public void onPreviousDouble() {
                     runOnUiThread(() -> {
                         navigateTurn(-1);
+                    });
+                }
+
+                @Override
+                public void onPlayPauseSingle() {
+                    runOnUiThread(() -> {
+                        if (mVoiceInputManager == null)
+                            return;
+
+                        switch (mVoiceInputManager.getState()) {
+                            case IDLE:
+                                mVoiceInputManager.startListening();
+                                break;
+                            case LISTENING:
+                                mVoiceInputManager.stopListening();
+                                break;
+                            case CONFIRMING:
+                                mVoiceInputManager.retryInput();
+                                break;
+                        }
+                    });
+                }
+
+                @Override
+                public void onPlayPauseDouble() {
+                    runOnUiThread(() -> {
+                        if (mVoiceInputManager == null)
+                            return;
+
+                        if (mVoiceInputManager.getState() == InputState.CONFIRMING) {
+                            mVoiceInputManager.confirmInput();
+                        }
                     });
                 }
             });
