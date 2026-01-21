@@ -27,7 +27,8 @@ import com.termux.terminal.TerminalSession;
 
 import java.util.List;
 
-public class TermuxSessionsListViewController extends ArrayAdapter<TermuxSession> implements AdapterView.OnItemClickListener, AdapterView.OnItemLongClickListener {
+public class TermuxSessionsListViewController extends ArrayAdapter<TermuxSession>
+        implements AdapterView.OnItemClickListener, AdapterView.OnItemLongClickListener {
 
     final TermuxActivity mActivity;
 
@@ -57,12 +58,12 @@ public class TermuxSessionsListViewController extends ArrayAdapter<TermuxSession
             return sessionRowView;
         }
 
-        boolean shouldEnableDarkTheme = ThemeUtils.shouldEnableDarkTheme(mActivity, NightMode.getAppNightMode().getName());
+        boolean shouldEnableDarkTheme = ThemeUtils.shouldEnableDarkTheme(mActivity,
+                NightMode.getAppNightMode().getName());
 
         if (shouldEnableDarkTheme) {
             sessionTitleView.setBackground(
-                ContextCompat.getDrawable(mActivity, R.drawable.session_background_black_selected)
-            );
+                    ContextCompat.getDrawable(mActivity, R.drawable.session_background_black_selected));
         }
 
         String name = sessionAtRow.mSessionName;
@@ -70,12 +71,47 @@ public class TermuxSessionsListViewController extends ArrayAdapter<TermuxSession
 
         String numberPart = "[" + (position + 1) + "] ";
         String sessionNamePart = (TextUtils.isEmpty(name) ? "" : name);
-        String sessionTitlePart = (TextUtils.isEmpty(sessionTitle) ? "" : ((sessionNamePart.isEmpty() ? "" : "\n") + sessionTitle));
+        String sessionTitlePart = (TextUtils.isEmpty(sessionTitle) ? ""
+                : ((sessionNamePart.isEmpty() ? "" : "\n") + sessionTitle));
 
-        String fullSessionTitle = numberPart + sessionNamePart + sessionTitlePart;
+        // Add Host/CWD info for debugging
+        String contextPart = "";
+        String cwdHost = sessionAtRow.getCwdHost();
+        String cwd = sessionAtRow.getCwd();
+
+        // Always check cache first - prefer cached remote host over local detection
+        TermuxActivity.SessionContext cached = TermuxActivity.getCachedSessionContext(sessionAtRow.mHandle);
+
+        // If we have a cached remote host and current cwdHost is empty/localhost, use
+        // cache
+        boolean liveHostIsRemote = cwdHost != null && !cwdHost.isEmpty() && !cwdHost.equals("localhost");
+        boolean cacheHasRemoteHost = cached != null && cached.host != null && !cached.host.isEmpty()
+                && !cached.host.equals("localhost");
+
+        if (!liveHostIsRemote && cacheHasRemoteHost) {
+            // Use cached values (e.g., during interactive apps like Claude Code)
+            cwdHost = cached.host;
+            cwd = cached.cwd;
+        }
+
+        if (cwdHost != null && !cwdHost.isEmpty()) {
+            contextPart = "\n📍 " + cwdHost;
+            if (cwd != null && !cwd.isEmpty()) {
+                // Shorten path if too long
+                String shortCwd = cwd.length() > 30 ? "..." + cwd.substring(cwd.length() - 27) : cwd;
+                contextPart += ":" + shortCwd;
+            }
+        } else if (cwd != null && !cwd.isEmpty()) {
+            String shortCwd = cwd.length() > 35 ? "..." + cwd.substring(cwd.length() - 32) : cwd;
+            contextPart = "\n📁 " + shortCwd;
+        }
+
+        String fullSessionTitle = numberPart + sessionNamePart + sessionTitlePart + contextPart;
         SpannableString fullSessionTitleStyled = new SpannableString(fullSessionTitle);
-        fullSessionTitleStyled.setSpan(boldSpan, 0, numberPart.length() + sessionNamePart.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        fullSessionTitleStyled.setSpan(italicSpan, numberPart.length() + sessionNamePart.length(), fullSessionTitle.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        fullSessionTitleStyled.setSpan(boldSpan, 0, numberPart.length() + sessionNamePart.length(),
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        fullSessionTitleStyled.setSpan(italicSpan, numberPart.length() + sessionNamePart.length(),
+                fullSessionTitle.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
 
         sessionTitleView.setText(fullSessionTitleStyled);
 

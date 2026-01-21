@@ -37,3 +37,22 @@ local.properties
 .swp
 ehthumbs.db
 Thumbs.db
+
+# Environment variables
+.env
+
+# AI Agent Memory
+**/CLAUDE.md
+
+# Logs
+*.log
+tools/server.log
+tools/claude-sync.log
+
+# VS Code
+.vscode/
+
+# Temporary tools
+tools/app/
+tools/tools/
+

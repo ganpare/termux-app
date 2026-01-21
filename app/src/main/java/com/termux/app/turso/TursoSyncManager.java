@@ -326,6 +326,113 @@ public class TursoSyncManager {
         void onError(String error);
     }
 
+    /**
+     * Get the latest assistant message from any session.
+     * This is useful when the app doesn't know the current session ID.
+     */
+    public void getLastAssistantMessage(MessageCallback callback) {
+        if (!isConfigured()) {
+            callback.onError("Database not configured");
+            return;
+        }
+
+        executor.execute(() -> {
+            try {
+                // Query latest message from any session
+                String findLatestSql = "SELECT turn_id FROM assistant_texts ORDER BY assistant_text_id DESC LIMIT 1";
+                List<Object> args = new ArrayList<>();
+
+                TursoResponse.ResultData res = client.executeSync(findLatestSql, args);
+
+                if (res != null && res.rows != null && res.rows.size() > 0) {
+                    long turnId = valAsLong(res.rows.get(0).getAsJsonArray().get(0));
+
+                    if (turnId > 0) {
+                        // Fetch all parts for this turn
+                        String fetchTextSql = "SELECT text FROM assistant_texts WHERE turn_id = ? ORDER BY part_index ASC";
+                        List<Object> fetchArgs = new ArrayList<>();
+                        fetchArgs.add(turnId);
+
+                        TursoResponse.ResultData textRes = client.executeSync(fetchTextSql, fetchArgs);
+                        if (textRes != null && textRes.rows != null) {
+                            StringBuilder sb = new StringBuilder();
+                            for (JsonElement rowEl : textRes.rows) {
+                                com.google.gson.JsonArray row = rowEl.getAsJsonArray();
+                                String text = valToString(row.get(0));
+                                sb.append(text);
+                            }
+                            String result = sb.toString();
+                            callback.onResult(result.isEmpty() ? null : result);
+                        } else {
+                            callback.onResult(null);
+                        }
+                    } else {
+                        callback.onResult(null);
+                    }
+                } else {
+                    callback.onResult(null);
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Error fetching latest message: " + e.getMessage());
+                callback.onError(e.getMessage());
+            }
+        });
+    }
+
+    /**
+     * Get the latest assistant message for a specific working directory.
+     * This ensures we only get messages from the current project.
+     */
+    public void getLatestMessageForCwd(String cwd, MessageCallback callback) {
+        if (!isConfigured()) {
+            callback.onError("Database not configured");
+            return;
+        }
+
+        executor.execute(() -> {
+            try {
+                // Find the latest turn_id for this cwd
+                String findTurnSql = "SELECT turn_id FROM turns WHERE cwd = ? ORDER BY turn_id DESC LIMIT 1";
+                List<Object> args = new ArrayList<>();
+                args.add(cwd);
+
+                TursoResponse.ResultData res = client.executeSync(findTurnSql, args);
+
+                if (res != null && res.rows != null && res.rows.size() > 0) {
+                    long turnId = valAsLong(res.rows.get(0).getAsJsonArray().get(0));
+
+                    if (turnId > 0) {
+                        // Fetch all assistant texts for this turn
+                        String fetchTextSql = "SELECT text FROM assistant_texts WHERE turn_id = ? ORDER BY part_index ASC";
+                        List<Object> fetchArgs = new ArrayList<>();
+                        fetchArgs.add(turnId);
+
+                        TursoResponse.ResultData textRes = client.executeSync(fetchTextSql, fetchArgs);
+                        if (textRes != null && textRes.rows != null) {
+                            StringBuilder sb = new StringBuilder();
+                            for (JsonElement rowEl : textRes.rows) {
+                                com.google.gson.JsonArray row = rowEl.getAsJsonArray();
+                                String text = valToString(row.get(0));
+                                sb.append(text);
+                            }
+                            String result = sb.toString();
+                            callback.onResult(result.isEmpty() ? null : result);
+                        } else {
+                            callback.onResult(null);
+                        }
+                    } else {
+                        callback.onResult(null);
+                    }
+                } else {
+                    callback.onResult(null);
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Error fetching message for cwd: " + e.getMessage());
+                callback.onError(e.getMessage());
+            }
+        });
+    }
+
     public void getLastAssistantMessage(String sessionId, MessageCallback callback) {
         if (!isConfigured()) {
             callback.onError("Database not configured");

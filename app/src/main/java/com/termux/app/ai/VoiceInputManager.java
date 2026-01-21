@@ -110,8 +110,23 @@ public class VoiceInputManager {
                 Log.e(TAG, "Error stopping", e);
             }
         }
-        // Force transition if sessionStopped doesn't fire immediately?
-        // Better to wait for callback, but let's ensure UI responsivity.
+
+        // Force immediate transition if we have text, or wait for callback
+        // The issue is that sessionStopped might take a while or not fire if network
+        // hangs.
+        // Let's rely on the callback for final cleanup, but we can verify if we already
+        // have text.
+        // Actually, let's just log for now to debug why UI doesn't change.
+        Log.d(TAG, "stopListening called. Current text: " + mRecognizedText);
+
+        // If we are stuck, it might be because sessionStopped isn't firing.
+        // Let's forcefully trigger completion after a short delay if it doesn't happen.
+        mMainHandler.postDelayed(() -> {
+            if (mState == InputState.LISTENING) {
+                Log.w(TAG, "Forcefully finishing recognition due to timeout/no-callback");
+                onRecognitionComplete();
+            }
+        }, 1000); // 1 second timeout for stop to complete
     }
 
     private void onRecognitionComplete() {

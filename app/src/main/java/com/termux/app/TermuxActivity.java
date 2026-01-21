@@ -44,6 +44,7 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import com.termux.app.ssh.SshConfigManager;
 import com.termux.app.ssh.SshConnectionConfig;
 import com.termux.app.activities.SshConnectionsActivity;
@@ -457,11 +458,12 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                             switch (newState) {
                                 case IDLE:
                                     status = "Ready";
-                                    help = "Tap Play to Start";
+                                    // Vol- does nothing in IDLE as requested
+                                    help = "Tap: Start | Vol+: Enter | Exit: On-screen";
                                     break;
                                 case LISTENING:
                                     status = "🎤 Listening...";
-                                    help = "Tap Play to Stop";
+                                    help = "Tap/Vol+: Stop | Vol-: Cancel";
                                     break;
                                 case CONFIRMING:
                                     return; // Handled by onTextRecognized
@@ -480,7 +482,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                     public void onTextRecognized(String text) {
                         if (mCurrentArPager != null) {
                             mCurrentArPager.updateText(
-                                    ("Recognized:\n" + text + "\n---\nDouble Tap: Send\nSingle Tap: Retry").trim());
+                                    ("Recognized:\n" + text + "\n---\nVol+: Send | Tap: Retry | Vol-: Cancel").trim());
                             mCurrentArPager.sendCurrentPage(null);
                             if (mActiveArDialog != null && mActiveArDialog.isShowing()) {
                                 updateArDialogUI(mActiveArDialog, mCurrentArPager);
@@ -492,8 +494,14 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                     public void onInputConfirmed(String text) {
                         TerminalSession session = getCurrentSession();
                         if (session != null) {
-                            session.write(text);
-                            session.write("\r");
+                            try {
+                                byte[] textBytes = text.getBytes(StandardCharsets.UTF_8);
+                                session.write(textBytes, 0, textBytes.length);
+                                byte[] crBytes = "\r".getBytes(StandardCharsets.UTF_8);
+                                session.write(crBytes, 0, crBytes.length);
+                            } catch (Exception e) {
+                                showToast("Failed to send text: " + e.getMessage(), true);
+                            }
                         }
                         if (mCurrentArPager != null) {
                             mCurrentArPager.updateText(("Sent!\n" + text).trim());
@@ -593,6 +601,105 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         super.onSaveInstanceState(savedInstanceState);
         saveTerminalToolbarTextInput(savedInstanceState);
         savedInstanceState.putBoolean(ARG_ACTIVITY_RECREATED, true);
+    }
+
+    /**
+     * Override to capture Volume keys when AR mode is active.
+     * This allows us to use Volume Up/Down as additional control buttons.
+     */
+    @Override
+    public boolean dispatchKeyEvent(android.view.KeyEvent event) {
+        // Only intercept when AR dialog is active
+        if (mActiveArDialog != null && mActiveArDialog.isShowing()) {
+            int keyCode = event.getKeyCode();
+
+            if (keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP) {
+                if (event.getAction() == android.view.KeyEvent.ACTION_DOWN) {
+                    // Handle Volume Up
+                    android.util.Log.d("TermuxActivity", "Volume UP captured in AR mode");
+                    handleVolumeUp();
+                }
+                return true; // Consume the event
+            } else if (keyCode == android.view.KeyEvent.KEYCODE_VOLUME_DOWN) {
+                if (event.getAction() == android.view.KeyEvent.ACTION_DOWN) {
+                    // Handle Volume Down
+                    android.util.Log.d("TermuxActivity", "Volume DOWN captured in AR mode");
+                    handleVolumeDown();
+                }
+                return true; // Consume the event
+            }
+        }
+        return super.dispatchKeyEvent(event);
+    }
+
+    private void handleVolumeUp() {
+        if (mVoiceInputManager == null)
+            return;
+
+        switch (mVoiceInputManager.getState()) {
+            case IDLE:
+                // Vol+: Enter Key
+                TerminalSession session = getCurrentSession();
+                if (session != null) {
+                    session.write("\r".getBytes(java.nio.charset.StandardCharsets.UTF_8), 0, 1);
+                    showToast("Enter Sent", false);
+                }
+                break;
+            case LISTENING:
+                // Vol+: Stop Listening (same as Play)
+                mVoiceInputManager.stopListening();
+                break;
+            case CONFIRMING:
+                // Vol+: Confirm Input
+                mVoiceInputManager.confirmInput();
+                break;
+        }
+    }
+
+    private void handleVolumeDown() {
+        if (mVoiceInputManager == null)
+            return;
+
+        switch (mVoiceInputManager.getState()) {
+            case IDLE:
+                // Vol-: Do Nothing (as requested)
+                break;
+            case LISTENING:
+                // Vol-: Cancel Listening
+                mVoiceInputManager.cancel();
+                if (mCurrentArPager != null) {
+                    mCurrentArPager.updateText("Canceled\n\nReady");
+                    mCurrentArPager.sendCurrentPage(null);
+                    if (mActiveArDialog != null && mActiveArDialog.isShowing()) {
+                        updateArDialogUI(mActiveArDialog, mCurrentArPager);
+                    }
+                }
+                break;
+            case CONFIRMING:
+                // Vol-: Cancel Confirmation
+                mVoiceInputManager.cancel();
+                if (mCurrentArPager != null) {
+                    mCurrentArPager.updateText("Canceled\n\nReady");
+                    mCurrentArPager.sendCurrentPage(null);
+                    if (mActiveArDialog != null && mActiveArDialog.isShowing()) {
+                        updateArDialogUI(mActiveArDialog, mCurrentArPager);
+                    }
+                }
+                break;
+        }
+    }
+
+    /**
+     * Helper to show "Canceled" state on AR display.
+     */
+    private void showCanceledOnAr() {
+        if (mCurrentArPager != null) {
+            mCurrentArPager.updateText("Canceled\n\nReady");
+            mCurrentArPager.sendCurrentPage(null);
+            if (mActiveArDialog != null && mActiveArDialog.isShowing()) {
+                updateArDialogUI(mActiveArDialog, mCurrentArPager);
+            }
+        }
     }
 
     /**
@@ -2533,6 +2640,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                     } else if (selected.startsWith("➡️")) {
                         // Next page
                         mCurrentArPager.nextPage(new com.termux.app.eveng1.EvenG1Protocol.TextSendCallback() {
+
                             @Override
                             public void onSuccess() {
                                 runOnUiThread(() -> showPageNavigationDialog());
@@ -2556,7 +2664,9 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                                 runOnUiThread(() -> showToast("送信失敗: " + error, true));
                             }
                         });
-                    } else {
+                    } else
+
+                {
                         // Close - exit to dashboard
                         com.termux.app.eveng1.EvenG1Manager manager = com.termux.app.eveng1.EvenG1Manager.getInstance();
                         byte[] exitPacket = com.termux.app.eveng1.EvenG1Protocol.createExitToDashboardPacket();
@@ -2564,9 +2674,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                         mCurrentArPager = null;
                         showToast("ARディスプレイを終了しました", false);
                     }
-                })
-                .setCancelable(false)
-                .show();
+                }).setCancelable(false).show();
     }
 
     /**
@@ -2676,15 +2784,32 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         ConversationSyncManager syncManager = new ConversationSyncManager();
 
         claudeButton.setOnClickListener(v -> {
+            // Check if AR sync is currently running
+            boolean isWatching = mAutoArSyncManager != null && mAutoArSyncManager.isWatching();
+
+            // Build menu items dynamically
+            String[] menuItems;
+            if (isWatching) {
+                menuItems = new String[] {
+                        "✨ AI Assistant (LLM)",
+                        "🤖 Claude→AR (自動同期)",
+                        "⏹️ AR監視停止",
+                        "👁️ AR Viewを開く",
+                        "🔄 サーバー再起動"
+                };
+            } else {
+                menuItems = new String[] {
+                        "✨ AI Assistant (LLM)",
+                        "🤖 Claude→AR (自動同期)",
+                        "👁️ AR Viewを開く",
+                        "🔄 サーバー再起動"
+                };
+            }
+
             // Show source selection dialog
             new AlertDialog.Builder(this)
                     .setTitle("AI / Claude メニュー")
-                    .setItems(new String[] {
-                            "✨ AI Assistant (LLM)",
-                            "🤖 Claude→AR (自動同期)",
-                            "👁️ AR Viewを開く",
-                            "🔄 サーバー再起動"
-                    }, (dialog, which) -> {
+                    .setItems(menuItems, (dialog, which) -> {
                         if (which == 0) {
                             showAiInteractionDialog();
                             return;
@@ -2694,12 +2819,17 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                             showAutoArSyncDialog();
                             return;
                         }
-                        if (which == 2) {
+                        if (isWatching && which == 2) {
+                            // Stop AR watching (only when watching)
+                            stopArWatching();
+                            return;
+                        }
+                        if ((!isWatching && which == 2) || (isWatching && which == 3)) {
                             // Open AR View
                             openArViewIfAvailable();
                             return;
                         }
-                        if (which == 3) {
+                        if ((!isWatching && which == 3) || (isWatching && which == 4)) {
                             // Restart server
                             restartClaudeServer();
                             return;
@@ -2747,6 +2877,18 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     private static final int CLAUDE_SERVER_PORT = 8765;
     private String mCurrentSshHost = ""; // SSH host for HTTP server connection
 
+    public static class SessionContext {
+        public final String host;
+        public final String cwd;
+
+        SessionContext(String host, String cwd) {
+            this.host = host;
+            this.cwd = cwd;
+        }
+    }
+
+    private static final java.util.Map<String, SessionContext> mSessionContextCache = new java.util.concurrent.ConcurrentHashMap<>();
+
     // AutoArSyncManager instance
     private AutoArSyncManager mAutoArSyncManager;
     private MediaControlManager mMediaControlManager; // For media button control
@@ -2756,6 +2898,14 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     private LlmClient mLlmClient;
     private TursoSyncManager mTursoSyncManager;
     private android.widget.TextView mArSyncStatusText;
+
+    /**
+     * Get cached session context for a given session.
+     * Used by drawer and AR sync when live detection fails.
+     */
+    public static SessionContext getCachedSessionContext(String sessionHandle) {
+        return mSessionContextCache.get(sessionHandle);
+    }
 
     private void updateArSyncStatus(String status) {
         if (mArSyncStatusText == null)
@@ -2769,6 +2919,25 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             mArSyncStatusText.setVisibility(View.VISIBLE);
             mArSyncStatusText.setText(status);
         });
+    }
+
+    /**
+     * Stops AR watching and cleans up resources.
+     */
+    private void stopArWatching() {
+        if (mAutoArSyncManager != null && mAutoArSyncManager.isWatching()) {
+            mAutoArSyncManager.stopWatching();
+            updateArSyncStatus(null); // Clear status text
+            showToast("AR監視を停止しました", false);
+
+            // Dismiss active AR dialog if showing
+            if (mActiveArDialog != null && mActiveArDialog.isShowing()) {
+                mActiveArDialog.dismiss();
+                mActiveArDialog = null;
+            }
+        } else {
+            showToast("AR監視は実行されていません", false);
+        }
     }
 
     /**
@@ -2789,8 +2958,61 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             return;
         }
 
+        // Auto-connect to AR glasses if not connected
         if (!EvenG1Manager.getInstance().isConnected()) {
-            showToast("ARグラスが接続されていません", true);
+            EvenG1ConfigManager configManager = new EvenG1ConfigManager(this);
+            EvenG1ConfigManager.SavedG1Device savedDevice = configManager.getSavedDevice();
+
+            if (savedDevice == null) {
+                showToast("ARグラスが接続されていません (保存済みデバイスもありません)", true);
+                return;
+            }
+
+            // Auto-connect to saved device
+            showToast("ARグラスに自動接続中...", false);
+            EvenG1Manager g1Manager = EvenG1Manager.getInstance();
+
+            // Initialize manager with callback to start sync after connection
+            g1Manager.initialize(getApplicationContext(), new EvenG1Manager.ConnectionCallback() {
+                @Override
+                public void onDeviceFound(@NonNull String channelNumber, @NonNull String leftName,
+                        @NonNull String rightName) {
+                    runOnUiThread(() -> {
+                        Logger.logDebug("TermuxActivity", "Found saved G1: " + channelNumber);
+                    });
+                }
+
+                @Override
+                public void onConnected(@NonNull EvenG1DevicePair pair) {
+                    runOnUiThread(() -> {
+                        showToast("ARグラス接続完了！", false);
+                        // Start auto sync after connection is established
+                        startAutoArSyncAfterConnectionCheck(session);
+                    });
+                }
+
+                @Override
+                public void onDisconnected() {
+                    runOnUiThread(() -> {
+                        showToast("ARグラス切断", true);
+                    });
+                }
+
+                @Override
+                public void onConnectionFailed(@NonNull String error) {
+                    runOnUiThread(() -> {
+                        showToast("AR接続失敗: " + error, true);
+                    });
+                }
+
+                @Override
+                public void onDataReceived(boolean isLeft, @NonNull byte[] data) {
+                    // Not used for auto-sync
+                }
+            });
+
+            // Connect to saved device
+            g1Manager.connectToSavedDevice(savedDevice);
             return;
         }
 
@@ -2803,12 +3025,40 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                         mAutoArSyncManager.stopWatching();
                         showToast("監視を停止しました", false);
                     })
-                    .setNegativeButton("継続", null)
+                    .setNegativeButton("継続", (d, w) -> {
+                        // Restore AR View
+                        if (mAutoArSyncManager != null) {
+                            String lastMsg = mAutoArSyncManager.getLastDisplayedMessage();
+                            if (lastMsg != null) {
+                                showAutoArPagerDialog(lastMsg);
+                            }
+                            showToast("AR表示を復帰しました", false);
+                        }
+                    })
                     .show();
             return;
         }
 
         // Directly start monitoring without query input
+        startAutoArSync(session, null);
+    }
+
+    /**
+     * Starts auto sync after verifying AR glasses connection.
+     * This is called after auto-connection completes.
+     */
+    private void startAutoArSyncAfterConnectionCheck(TerminalSession session) {
+        if (!EvenG1Manager.getInstance().isConnected()) {
+            showToast("ARグラス接続エラー", true);
+            return;
+        }
+
+        // Check if already watching
+        if (mAutoArSyncManager != null && mAutoArSyncManager.isWatching()) {
+            showToast("既に監視中です", false);
+            return;
+        }
+
         startAutoArSync(session, null);
     }
 
@@ -2822,12 +3072,39 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         if (mAutoArSyncManager != null) {
             mAutoArSyncManager.stopWatching();
         }
-        mAutoArSyncManager = new AutoArSyncManager(mCurrentSshHost, CLAUDE_SERVER_PORT);
+        mAutoArSyncManager = new AutoArSyncManager(this);
 
-        mAutoArSyncManager.startWatching(session, query, new AutoArSyncManager.SyncCallback() {
+        // Resolve CWD
+        String cwd = session.getCwd();
+        SessionContext cachedCtx = mSessionContextCache.get(session.mHandle);
+        // Use cached CWD if current is null/empty or we want to prefer cache during
+        // interactive sessions?
+        // Actually, if we are in an interactive session, session.getCwd() might be
+        // stale or not updated.
+        // But if cachedCtx exists, it contains the last known good state.
+        if (cachedCtx != null) {
+            if (cwd == null || cwd.isEmpty()) {
+                cwd = cachedCtx.cwd;
+            } else if (cachedCtx.cwd != null && !cachedCtx.cwd.isEmpty()) {
+                // If we have both, generally session.getCwd() is fresher via OSC 7,
+                // UNLESS we are in an interactive app where OSC 7 stopped.
+                // But generally session.getCwd() returns the last seen OSC 7 value anyway.
+                // So using session.getCwd() is fine if available.
+                // However, the issue is opposite: session.getCwd() might be correct, but host
+                // detection fails.
+                // We just need to ensure we pass *some* valid CWD.
+            }
+        }
+
+        // Use cached CWD if session returns null
+        if ((cwd == null || cwd.isEmpty()) && cachedCtx != null) {
+            cwd = cachedCtx.cwd;
+        }
+
+        mAutoArSyncManager.startWatching(session, query, cwd, new AutoArSyncManager.SyncCallback() {
             @Override
             public void onWatchStarted() {
-                showToast("クエリ送信、監視開始...", false);
+                showToast("クエリ送信、Turso監視開始...", false);
                 updateArSyncStatus("監視開始: 応答待機中...");
             }
 
@@ -2839,12 +3116,6 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             }
 
             @Override
-            public void onFileChanged() {
-                updateArSyncStatus("更新検出: ダウンロード中...");
-                showToast("ファイル更新検出！ダウンロード中...", false);
-            }
-
-            @Override
             public void onStatusChanged(String status) {
                 // General status updates from manager
                 updateArSyncStatus(status);
@@ -2852,46 +3123,14 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             }
 
             @Override
-            public void onSyncComplete(String filePath, String content) {
-                updateArSyncStatus("ローカル更新完了. DB同期中...");
-                showToast("AR同期中...", false);
-                // Sync to Turso (Always sync)
-                if (mTursoSyncManager != null) {
-                    mTursoSyncManager.sync(filePath, () -> {
-                        updateArSyncStatus("DB同期完了. 最新件取得中...");
-                        // After sync completes, fetch latest message from Turso
-                        mTursoSyncManager.getLastAssistantMessage(new java.io.File(filePath).getName(),
-                                new com.termux.app.turso.TursoSyncManager.MessageCallback() {
-                                    @Override
-                                    public void onResult(String message) {
-                                        runOnUiThread(() -> {
-                                            if (message != null && !message.trim().isEmpty()) {
-                                                updateArSyncStatus("AR表示完了");
-                                                showAutoArPagerDialog(message);
-                                                showToast("AR表示完了 (from Turso)", false);
-
-                                                // Optional: Revert to monitoring status if still watching?
-                                                // But sync complete usually means we wait for NEXT poling?
-                                                // Actually onSyncComplete is called, then scheduleNextPoll is called in
-                                                // manager.
-                                                // So onPolling will update status soon.
-                                            } else {
-                                                updateArSyncStatus("DB取得結果なし");
-                                                android.util.Log.d("AutoArSync", "Turso returned empty message");
-                                            }
-                                        });
-                                    }
-
-                                    @Override
-                                    public void onError(String error) {
-                                        runOnUiThread(() -> {
-                                            updateArSyncStatus("DB取得エラー: " + error);
-                                            showToast("Turso取得エラー: " + error, true);
-                                        });
-                                    }
-                                });
-                    });
-                }
+            public void onNewMessage(String message) {
+                updateArSyncStatus("新規メッセージ検出: AR表示中...");
+                showToast("新規メッセージ検出！", false);
+                runOnUiThread(() -> {
+                    updateArSyncStatus("AR表示完了");
+                    showAutoArPagerDialog(message);
+                    showToast("AR表示完了", false);
+                });
             }
 
             @Override
@@ -2934,6 +3173,55 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     }
 
     /**
+     * Called from onTitleChanged callback to detect and cache SSH host info.
+     * This ensures the cache is populated before interactive apps (like Claude
+     * Code) start.
+     */
+    public void tryDetectAndCacheSshHost(TerminalSession session) {
+        if (session == null)
+            return;
+
+        String title = session.getTitle();
+        if (title == null || title.isEmpty())
+            return;
+
+        // Check if we already have this host cached - don't process repeatedly
+        SessionContext existing = mSessionContextCache.get(session.mHandle);
+
+        // Parse title for SSH patterns
+        java.util.regex.Pattern p = java.util.regex.Pattern
+                .compile("(?:ssh\\s+(?:[^\\s@]+@)?([^\\s]+))|([^\\s@]+@[^\\s]+)");
+        java.util.regex.Matcher m = p.matcher(title);
+
+        if (m.find()) {
+            String userHost = m.group(1);
+            if (userHost == null) {
+                userHost = m.group(2);
+            }
+
+            if (userHost != null) {
+                if (userHost.endsWith(":")) {
+                    userHost = userHost.substring(0, userHost.length() - 1);
+                }
+
+                int atIndex = userHost.indexOf('@');
+                String host = (atIndex >= 0) ? userHost.substring(atIndex + 1) : userHost;
+
+                if (!host.isEmpty() && !host.equals("localhost")) {
+                    // Preserve existing CWD if available
+                    String cwd = (existing != null && existing.cwd != null) ? existing.cwd : session.getCwd();
+                    mSessionContextCache.put(session.mHandle, new SessionContext(host, cwd));
+
+                    if (!host.equals(mCurrentSshHost)) {
+                        mCurrentSshHost = host;
+                        android.util.Log.d("SSH Detection", "タイトル変更時キャッシュ: host=" + host + ", cwd=" + cwd);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
      * Parse session title to detect SSH host and update mCurrentSshHost.
      */
     private void detectAndSetSshHost() {
@@ -2943,14 +3231,19 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
 
         // 1. Check OSC 7 Hostname (Best source)
         String oscHost = session.getCwdHost();
+        String oscCwd = session.getCwd(); // Also get CWD
+
         if (oscHost != null && !oscHost.isEmpty()) {
             if (!oscHost.equals(mCurrentSshHost)) {
                 mCurrentSshHost = oscHost;
-                showToast("OSC7からホストを検出: " + mCurrentSshHost, false);
+                android.util.Log.d("SSH Detection", "OSC7からホストを検出: " + mCurrentSshHost);
             }
+            // Always update cache when we have OSC 7 data (it's the most reliable)
+            mSessionContextCache.put(session.mHandle, new SessionContext(oscHost, oscCwd));
             return;
         }
 
+        // 2. Check title for SSH patterns
         String title = session.getTitle();
         if (title == null)
             return;
@@ -2982,8 +3275,25 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
 
                 if (!host.isEmpty() && !host.equals(mCurrentSshHost)) {
                     mCurrentSshHost = host;
-                    showToast("SSHホストを検出: " + mCurrentSshHost, false);
+
+                    // Update cache, preserving existing CWD if possible
+                    SessionContext createCtx = mSessionContextCache.get(session.mHandle);
+                    String currentCwd = (createCtx != null) ? createCtx.cwd : session.getCwd();
+                    mSessionContextCache.put(session.mHandle, new SessionContext(host, currentCwd));
+
+                    android.util.Log.d("SSH Detection", "タイトルからホストを検出: " + mCurrentSshHost);
+                    return;
                 }
+            }
+        }
+
+        // 3. Fallback to cache if detection failed
+        SessionContext cachedCtx = mSessionContextCache.get(session.mHandle);
+        if (cachedCtx != null && cachedCtx.host != null && !cachedCtx.host.isEmpty()) {
+            // Only log if switching back to cached value
+            if (!cachedCtx.host.equals(mCurrentSshHost)) {
+                mCurrentSshHost = cachedCtx.host;
+                android.util.Log.d("SSH Detection", "キャッシュからホストを復元: " + mCurrentSshHost);
             }
         }
     }
@@ -3002,7 +3312,9 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             return;
         }
 
-        showToast("セッション一覧を取得中...", false);
+        String connectionUrl = "http://" + mCurrentSshHost + ":" + CLAUDE_SERVER_PORT;
+        android.util.Log.d("ClaudeHttp", "接続先: " + connectionUrl);
+        showToast("セッション一覧取得中: " + mCurrentSshHost, false);
 
         ClaudeHistoryHttpClient client = new ClaudeHistoryHttpClient(mCurrentSshHost, CLAUDE_SERVER_PORT);
         client.listCurrentFiles(new ClaudeHistoryHttpClient.FileListCallback() {
@@ -3010,6 +3322,8 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             public void onSuccess(String cwd, String project,
                     java.util.List<ClaudeHistoryHttpClient.RemoteFile> files) {
                 runOnUiThread(() -> {
+                    android.util.Log.d("ClaudeHttp",
+                            "成功: cwd=" + cwd + ", project=" + project + ", files=" + files.size());
                     if (files.isEmpty()) {
                         showToast("会話履歴が見つかりません", true);
                         return;
@@ -3020,7 +3334,11 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
 
             @Override
             public void onError(String message) {
-                runOnUiThread(() -> showToast("一覧取得エラー: " + message, true));
+                runOnUiThread(() -> {
+                    String errorMsg = "接続エラー: " + connectionUrl + "\n" + message;
+                    android.util.Log.e("ClaudeHttp", errorMsg);
+                    showToast(errorMsg, true);
+                });
             }
         });
     }
@@ -3356,6 +3674,23 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                 @Override
                 public void onNextSingle() {
                     runOnUiThread(() -> {
+                        // State-aware: Next action depends on voice state
+                        if (mVoiceInputManager != null) {
+                            switch (mVoiceInputManager.getState()) {
+                                case LISTENING:
+                                    // Cancel recording
+                                    mVoiceInputManager.cancel();
+                                    showCanceledOnAr();
+                                    return;
+                                case CONFIRMING:
+                                    // Confirm/Send
+                                    mVoiceInputManager.confirmInput();
+                                    return;
+                                case IDLE:
+                                    // Fall through to page navigation
+                                    break;
+                            }
+                        }
                         try {
                             pager.nextPage(null);
                             updateArDialogUI(mActiveArDialog, pager);
@@ -3375,6 +3710,20 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                 @Override
                 public void onPreviousSingle() {
                     runOnUiThread(() -> {
+                        // State-aware: Prev action depends on voice state
+                        if (mVoiceInputManager != null) {
+                            switch (mVoiceInputManager.getState()) {
+                                case LISTENING:
+                                case CONFIRMING:
+                                    // Cancel
+                                    mVoiceInputManager.cancel();
+                                    showCanceledOnAr();
+                                    return;
+                                case IDLE:
+                                    // Fall through to page navigation
+                                    break;
+                            }
+                        }
                         try {
                             pager.prevPage(null);
                             updateArDialogUI(mActiveArDialog, pager);
@@ -3418,6 +3767,84 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
 
                         if (mVoiceInputManager.getState() == InputState.CONFIRMING) {
                             mVoiceInputManager.confirmInput();
+                        } else if (mVoiceInputManager.getState() == InputState.IDLE) {
+                            // Double tap in IDLE state sends Enter key
+                            TerminalSession session = getCurrentSession();
+                            if (session != null) {
+                                session.write("\r".getBytes(StandardCharsets.UTF_8), 0, 1);
+                                showToast("Enter Sent", false);
+                            }
+                        }
+                    });
+                }
+
+                @Override
+                public void onPlayPauseTriple() {
+                    runOnUiThread(() -> {
+                        // Triple tap always stops watching and closes AR view (Backup)
+                        stopArWatching();
+                    });
+                }
+
+                @Override
+                public void onVolumeUp() {
+                    runOnUiThread(() -> {
+                        if (mVoiceInputManager == null)
+                            return;
+
+                        switch (mVoiceInputManager.getState()) {
+                            case IDLE:
+                                // Vol+: Enter Key
+                                TerminalSession session = getCurrentSession();
+                                if (session != null) {
+                                    session.write("\r".getBytes(StandardCharsets.UTF_8), 0, 1);
+                                    showToast("Enter Sent", false);
+                                }
+                                break;
+                            case LISTENING:
+                                // Vol+: Stop Listening (same as Play)
+                                mVoiceInputManager.stopListening();
+                                break;
+                            case CONFIRMING:
+                                // Vol+: Confirm Input
+                                mVoiceInputManager.confirmInput();
+                                break;
+                        }
+                    });
+                }
+
+                @Override
+                public void onVolumeDown() {
+                    runOnUiThread(() -> {
+                        if (mVoiceInputManager == null)
+                            return;
+
+                        switch (mVoiceInputManager.getState()) {
+                            case IDLE:
+                                // Vol-: Do Nothing (as requested)
+                                break;
+                            case LISTENING:
+                                // Vol-: Cancel Listening
+                                mVoiceInputManager.cancel();
+                                if (mCurrentArPager != null) {
+                                    mCurrentArPager.updateText("Canceled\n\nReady");
+                                    mCurrentArPager.sendCurrentPage(null);
+                                    if (mActiveArDialog != null && mActiveArDialog.isShowing()) {
+                                        updateArDialogUI(mActiveArDialog, mCurrentArPager);
+                                    }
+                                }
+                                break;
+                            case CONFIRMING:
+                                // Vol-: Cancel Confirmation
+                                mVoiceInputManager.cancel();
+                                if (mCurrentArPager != null) {
+                                    mCurrentArPager.updateText("Canceled\n\nReady");
+                                    mCurrentArPager.sendCurrentPage(null);
+                                    if (mActiveArDialog != null && mActiveArDialog.isShowing()) {
+                                        updateArDialogUI(mActiveArDialog, mCurrentArPager);
+                                    }
+                                }
+                                break;
                         }
                     });
                 }
@@ -3485,6 +3912,24 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             btnLayout.addView(btnNextTurn);
 
             layout.addView(btnLayout);
+
+            // Add Exit Button Row
+            android.widget.LinearLayout exitLayout = new android.widget.LinearLayout(this);
+            exitLayout.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+            exitLayout.setGravity(android.view.Gravity.CENTER);
+            exitLayout.setPadding(0, padding / 2, 0, 0);
+
+            android.widget.Button btnExit = new android.widget.Button(this);
+            btnExit.setText("音声入力/AR終了");
+            btnExit.setBackgroundColor(0xFFFFCCCC); // Light red hint
+            btnExit.setTextColor(0xFFFF0000);
+            btnExit.setOnClickListener(v -> {
+                stopArWatching();
+                if (mActiveArDialog != null)
+                    mActiveArDialog.dismiss();
+            });
+            exitLayout.addView(btnExit);
+            layout.addView(exitLayout);
 
             builder.setView(layout);
             builder.setTitle("AR View (" + pager.getCurrentPageNum() + "/" + pager.getTotalPages() + ")");

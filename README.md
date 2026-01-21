@@ -27,7 +27,7 @@
 
 ### AI Assistant & AR
 - **LLM Integration**: Built-in chat interface for Claude/OpenAI with customizable prompts.
-- **AR Glasses Support**: Direct integration with Even Realities G1 glasses to display notifications and AI responses.
+- **AR Glasses Support**: Direct integration with Even Realities G1 glasses to display notifications and AI responses. Includes **Volume Key** and **Media Button** controls for hands-free operation.
 - **Conversation Sync**: Automatically sync Claude Code conversation history (`.jsonl`) to a Turso database for archival and analysis.
 - **Voice Input**: Azure Speech-to-Text integration for voice commands.
 

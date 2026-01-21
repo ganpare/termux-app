@@ -1319,6 +1319,104 @@ public class MediaControlManager {
 
 ---
 
+
+## 9. AR操作仕様 (User Interaction)
+
+Termuxアプリでは、ARグラスのハードウェアボタンとスマートフォンのボリュームキーを組み合わせた、強力な操作系を実装しています。
+これにより、スマートフォンをポケットに入れたまま（または手元で見ずに）複雑な操作が可能になります。
+
+### 9.1 ハードウェアボタンマップ
+
+| ボタン | 捕捉方式 | 有効範囲 | 役割 |
+| :--- | :--- | :--- | :--- |
+| **Play/Pause** | MediaSession | 全体 (FG/BG) | **メインアクション** (録音開始/停止/リトライ) |
+| **Next Track** | MediaSession | 全体 (FG/BG) | **進む / 送信** (ページ送り/決定) |
+| **Prev Track** | MediaSession | 全体 (FG/BG) | **戻る / キャンセル** (ページ戻し/取り消し) |
+| **Volume UP** | dispatchKeyEvent | フォアグラウンド* | **決定・送信** (Enter/確定) |
+| **Volume DOWN** | dispatchKeyEvent | フォアグラウンド* | **キャンセル** (取り消し) |
+
+> **Note**: ボリュームキー操作は、ARダイアログが表示されている（Activityが前面にある）場合のみ有効です。
+
+### 9.2 状態別アクション詳細
+
+AR機能は「待機」「録音」「確認」の3つの状態を持ち、各ボタンの挙動が変化します。
+
+#### 1. IDLE (待機中 / 閲覧中)
+通常の状態です。テキストを読んだり、次の操作を待ち受けます。
+
+- **Play (1回)**: 🎤 録音開始 (→ LISTENING)
+- **Play (2回)**: ↩️ Enterキー送信 (シェルに改行を送る)
+- **Play (3回)**: 🚪 ARモード終了
+- **Volume UP**: ↩️ Enterキー送信
+- **Volume DOWN**: (なし)
+- **Next**: 次ページへ / (2回押し) 次の会話ログへ
+- **Prev**: 前ページへ / (2回押し) 前の会話ログへ
+
+#### 2. LISTENING (録音中)
+ユーザーの発話を待っている状態です。
+
+- **Play / Volume UP**: ⏹️ 録音停止して認識 (→ CONFIRMING / IDLE)
+- **Volume DOWN**: ❌ キャンセル (録音を破棄して IDLE へ)
+- **Next / Prev**: ❌ キャンセル (録音を破棄して IDLE へ)
+
+#### 3. CONFIRMING (認識確認中)
+認識されたテキストを表示し、送信するか確認する状態です。
+
+- **Play (1回)**: 🔄 リトライ (再録音 → LISTENING)
+- **Play (2回)**: 📤 送信 (テキストを確定してシェルへ送る)
+- **Volume UP**: 📤 送信
+- **Next**: 📤 送信
+- **Volume DOWN**: ❌ キャンセル (破棄して IDLE へ)
+- **Prev**: ❌ キャンセル
+
+---
+
+### 9.3 実装のポイント
+
+#### State-Aware Navigation
+`Next` / `Prev` ボタンは、MediaSessionを通じてバックグラウンドでも動作するため、ボリュームキー（フォアグラウンド限定）の代替として重要です。
+そのため、録音中や確認中には「ページ送り」ではなく「キャンセル/送信」として機能するようにコンテキスト（状態）を認識して動作します。
+
+```java
+// コンテキスト依存のボタン処理例
+public void onNextSingle() {
+    switch (mVoiceInputManager.getState()) {
+        case LISTENING:
+            // 録音中は "キャンセル" として振る舞う
+            mVoiceInputManager.cancel();
+            return;
+        case CONFIRMING:
+            // 確認中は "送信" として振る舞う
+            mVoiceInputManager.confirmInput();
+            return;
+        case IDLE:
+            // 通常時は "次ページ"
+            pager.nextPage();
+            break;
+    }
+}
+```
+
+#### Volume Key Interception
+Activityの `dispatchKeyEvent` をオーバーライドすることで、AR表示中（ユーザーが画面を見ている、あるいは操作していると想定される状況）において、システム音量操作をフックしてアプリ内操作に変換しています。
+
+```java
+@Override
+public boolean dispatchKeyEvent(KeyEvent event) {
+    if (isArDialogShowing()) {
+        // ARダイアログ表示中のみフック
+        if (keyCode == KEYCODE_VOLUME_UP) {
+            handleVolumeUp(); // Enter or Send
+            return true;      // イベント消費
+        }
+        // ...
+    }
+    return super.dispatchKeyEvent(event);
+}
+```
+
+---
+
 ## ライセンス
 
 このドキュメントのコード例は、EVEN G1との互換性を持つアプリケーション開発に自由に使用できます。

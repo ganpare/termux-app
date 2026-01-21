@@ -4,8 +4,10 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
 /**
- * The interface for communication between {@link TerminalSession} and its client. It is used to
- * send callbacks to the client when {@link TerminalSession} changes or for sending other
+ * The interface for communication between {@link TerminalSession} and its
+ * client. It is used to
+ * send callbacks to the client when {@link TerminalSession} changes or for
+ * sending other
  * back data to the client like logs.
  */
 public interface TerminalSessionClient {
@@ -28,11 +30,7 @@ public interface TerminalSessionClient {
 
     void setTerminalShellPid(@NonNull TerminalSession session, int pid);
 
-
-
     Integer getTerminalCursorStyle();
-
-
 
     void logError(String tag, String message);
 

@@ -1,55 +1,42 @@
 package com.termux.app.claude;
 
+import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Log;
 
-import com.termux.app.eveng1.EvenG1Manager;
-import com.termux.app.eveng1.EvenG1Protocol;
-import com.termux.app.eveng1.EvenG1Constants;
+import com.termux.app.turso.TursoSyncManager;
 import com.termux.terminal.TerminalSession;
 
-import org.json.JSONObject;
-
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Manages automatic AR synchronization.
- * 
- * Flow:
- * 1. User inputs query in dedicated input field
- * 2. On "Send→AR" button press:
- * a. Get current latest file timestamp from HTTP server
- * b. Send query to terminal
- * c. Start polling (every 5 seconds)
- * d. Show "考え中..." on AR glasses (moving position each poll)
- * e. When timestamp changes → download new file → display on AR
- * f. Timeout after 10 minutes
+ * Simplified AR Sync Manager that polls Turso directly.
+ *
+ * New architecture:
+ * 1. Server-side Python script watches JSONL files and syncs to Turso
+ * 2. App only polls Turso for new messages
+ * 3. No file downloads or parsing on app side
  */
 public class AutoArSyncManager {
 
-    private static final int POLL_INTERVAL_MS = 5000; // 5 seconds
+    private static final String TAG = "AutoArSyncManager";
+    private static final int POLL_INTERVAL_MS = 3000; // 3 seconds
     private static final int MAX_POLL_TIME_MS = 10 * 60 * 1000; // 10 minutes
-    private static final int CONNECT_TIMEOUT_MS = 5000;
-    private static final int READ_TIMEOUT_MS = 10000;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final AtomicBoolean isWatching = new AtomicBoolean(false);
-    private boolean hasDisplayedContent = false;
 
-    private String serverHost;
-    private int serverPort;
-    private double initialMtime = 0;
-    private String initialLatestComment = null; // 初期の最新assistantメッセージ
+    private final TursoSyncManager tursoManager;
+    private final Context context;
+
     private long watchStartTime = 0;
     private int pollCount = 0;
+    private String lastDisplayedMessage = null;
+    private String currentCwd = null; // Current working directory
 
     // Thinking animation frames
     private static final String[] THINKING_FRAMES = {
@@ -61,32 +48,26 @@ public class AutoArSyncManager {
             "考え中 ......",
     };
 
-    // Debug counters
-    private int debugMtimeUpdates = 0;
-    private int debugTextSame = 0;
-
     /**
      * Callback interface for sync events.
      */
     public interface SyncCallback {
         void onWatchStarted();
 
-        void onFileChanged();
-
         void onStatusChanged(String status);
 
-        void onSyncComplete(String filePath, String content);
+        void onNewMessage(String message);
 
         void onError(String message);
 
         void onTimeout();
 
-        void onPolling(int count, int maxSeconds);
+        void onPolling(int count, int remainingSeconds);
     }
 
-    public AutoArSyncManager(String host, int port) {
-        this.serverHost = host;
-        this.serverPort = port;
+    public AutoArSyncManager(Context context) {
+        this.context = context;
+        this.tursoManager = new TursoSyncManager(context);
     }
 
     /**
@@ -97,101 +78,114 @@ public class AutoArSyncManager {
     }
 
     /**
-     * Start watching for file changes and sync to AR.
-     * 
+     * Get the last message that was displayed.
+     */
+    public String getLastDisplayedMessage() {
+        return lastDisplayedMessage;
+    }
+
+    /**
+     * Start watching for new messages from Turso.
+     *
      * @param session  Terminal session to send query to
-     * @param query    Query text to send
+     * @param query    Query text to send (can be null/empty)
+     * @param cwd      Current working directory (optional, if null will attempt to
+     *                 get from session)
      * @param callback Callback for sync events
      */
-    public void startWatching(TerminalSession session, String query, SyncCallback callback) {
+    public void startWatching(TerminalSession session, String query, String cwd, SyncCallback callback) {
         if (isWatching.get()) {
             callback.onError("既に監視中です");
             return;
         }
 
+        if (!tursoManager.isConfigured()) {
+            callback.onError("Tursoが設定されていません");
+            return;
+        }
+
+        // Use provided CWD, or fallback to session's CWD
+        currentCwd = cwd;
+        if (currentCwd == null || currentCwd.isEmpty()) {
+            currentCwd = session.getCwd();
+        }
+
+        if (currentCwd == null || currentCwd.isEmpty()) {
+            callback.onError("カレントディレクトリを取得できません");
+            return;
+        }
+
+        Log.d(TAG, "Starting watch for CWD: " + currentCwd);
+
         isWatching.set(true);
-        isWatching.set(true);
-        hasDisplayedContent = false;
         pollCount = 0;
         watchStartTime = System.currentTimeMillis();
+        lastDisplayedMessage = null;
 
         executor.execute(() -> {
             try {
-                // Step 1: Get initial timestamp and latest assistant comment
-                JSONObject info = fetchLatestInfo();
-                if (info == null) {
-                    postError(callback, "サーバーに接続できません");
-                    isWatching.set(false);
-                    return;
-                }
-
-                initialMtime = info.getDouble("mtime");
-
-                // Get initial latest assistant comment to compare later
-                ClaudeHistoryHttpClient client = new ClaudeHistoryHttpClient(serverHost, serverPort);
-                client.downloadLatest(new ClaudeHistoryHttpClient.DownloadCallback() {
+                // First, fetch the current latest message to set as baseline
+                tursoManager.getLatestMessageForCwd(currentCwd, new TursoSyncManager.MessageCallback() {
                     @Override
-                    public void onSuccess(String localPath) {
-                        ClaudeChatParser.AgentComment comment = ClaudeChatParser.getLatestAgentComment(localPath);
-
-                        boolean isInProgress = comment != null && !"end_turn".equals(comment.stopReason);
-
-                        if (isInProgress) {
-                            // If already in progress, don't suppress it!
-                            // Treat as if we have no baseline, so the first poll will see it as "New" (or
-                            // handle in poll).
-                            // Actually, better to just NOT set initialLatestComment here if it's in
-                            // progress,
-                            // OR set it but rely on poll to handle "initial==null" logic.
-
-                            // If we leave initialLatestComment as null, the poll loop will enter "if
-                            // (initial == null)".
-                            // We need that block to handle "InProgress" differently.
-                            initialLatestComment = null;
-                            android.util.Log.d("AutoArSync", "Initial message is IN PROGRESS, allowing display.");
+                    public void onResult(String message) {
+                        if (message != null && !message.isEmpty()) {
+                            proceedWithBaseline(message);
                         } else {
-                            initialLatestComment = comment != null ? comment.text : null;
-                            android.util.Log.d("AutoArSync", "Initial latest comment (Completed): " +
-                                    (initialLatestComment != null
-                                            ? initialLatestComment.substring(0,
-                                                    Math.min(50, initialLatestComment.length()))
-                                                    + "..."
-                                            : "null"));
+                            // Fallback: Try to get global latest message if CWD specific one not found
+                            Log.d(TAG, "No message found for CWD, trying global fallback");
+                            tursoManager.getLastAssistantMessage(new TursoSyncManager.MessageCallback() {
+                                @Override
+                                public void onResult(String globalMsg) {
+                                    if (globalMsg != null) {
+                                        Log.d(TAG, "Global fallback message found");
+                                    }
+                                    proceedWithBaseline(globalMsg);
+                                }
+
+                                @Override
+                                public void onError(String error) {
+                                    Log.w(TAG, "Global fallback failed: " + error);
+                                    proceedWithBaseline(null);
+                                }
+                            });
+                        }
+                    }
+
+                    private void proceedWithBaseline(String baselineMsg) {
+                        if (baselineMsg != null && !baselineMsg.isEmpty()) {
+                            lastDisplayedMessage = baselineMsg;
+                            Log.d(TAG, "Baseline message found: " +
+                                    (baselineMsg.length() > 50 ? baselineMsg.substring(0, 50) + "..." : baselineMsg));
                         }
 
-                        // Step 2: Send query to terminal (if provided)
+                        // Then send query and start watching
                         mainHandler.post(() -> {
+                            // Send query to terminal if provided
                             if (query != null && !query.isEmpty()) {
-                                String fullQuery = query + "\n";
-                                byte[] data = fullQuery.getBytes();
+                                byte[] data = (query + "\n").getBytes();
                                 session.write(data, 0, data.length);
                             }
                             callback.onWatchStarted();
+
+                            // Show existing content immediately if found
+                            if (lastDisplayedMessage != null) {
+                                callback.onNewMessage(lastDisplayedMessage);
+                            }
                         });
 
-                        // Step 3: Start polling
-                        callback.onStatusChanged("サーバー監視を開始します...");
+                        // Start polling for changes (ON BACKGROUND THREAD)
                         pollForChanges(callback);
                     }
 
                     @Override
-                    public void onError(String message) {
-                        // Even if we can't get initial comment, start polling anyway
-                        android.util.Log.w("AutoArSync", "Failed to get initial comment: " + message);
-                        initialLatestComment = null;
-
-                        mainHandler.post(() -> {
-                            String fullQuery = query + "\n";
-                            byte[] data = fullQuery.getBytes();
-                            session.write(data, 0, data.length);
-                            callback.onWatchStarted();
-                        });
-
-                        pollForChanges(callback);
+                    public void onError(String error) {
+                        // Even if we can't get baseline, start watching
+                        Log.w(TAG, "Failed to get baseline message: " + error);
+                        proceedWithBaseline(null);
                     }
                 });
-
             } catch (Exception e) {
+                Log.e(TAG, "Error starting watch: " + e.getMessage());
                 postError(callback, "エラー: " + e.getMessage());
                 isWatching.set(false);
             }
@@ -206,325 +200,71 @@ public class AutoArSyncManager {
     }
 
     /**
-     * Notify that content has been displayed externally (e.g. manual AR view).
-     * This stops the "Thinking..." animation.
+     * Poll Turso for new messages.
      */
-    public void notifyContentDisplayed() {
-        this.hasDisplayedContent = true;
-    }
-
     private void pollForChanges(SyncCallback callback) {
-        if (!isWatching.get()) {
-            return;
-        }
-
-        // Check timeout
-        long elapsed = System.currentTimeMillis() - watchStartTime;
-        if (elapsed >= MAX_POLL_TIME_MS) {
-            isWatching.set(false);
-            mainHandler.post(callback::onTimeout);
-            return;
-        }
-
-        pollCount++;
-        int remainingSeconds = (int) ((MAX_POLL_TIME_MS - elapsed) / 1000);
-
-        // Notify polling progress
-        final int currentPollCount = pollCount;
-        mainHandler.post(() -> callback.onPolling(currentPollCount, remainingSeconds));
-
-        // Show thinking animation on AR (only if no content displayed yet)
-        if (!hasDisplayedContent) {
-            showThinkingOnAr(pollCount);
-        }
-
-        executor.execute(() -> {
+        while (isWatching.get()) {
             try {
-                JSONObject info = fetchLatestInfo();
-                if (info == null) {
-                    // Server error, but continue polling
-                    scheduleNextPoll(callback);
-                    return;
+                // Check timeout
+                long elapsed = System.currentTimeMillis() - watchStartTime;
+                if (elapsed > MAX_POLL_TIME_MS) {
+                    Log.d(TAG, "Polling timeout");
+                    mainHandler.post(callback::onTimeout);
+                    isWatching.set(false);
+                    break;
                 }
 
-                double currentMtime = info.getDouble("mtime");
+                pollCount++;
+                int remainingSeconds = (int) ((MAX_POLL_TIME_MS - elapsed) / 1000);
 
-                if (currentMtime > initialMtime) {
-                    // File changed! Check if assistant message actually changed
-                    checkAndDisplayIfNew(callback);
-                } else {
-                    // No change, continue polling
-                    scheduleNextPoll(callback);
-                }
-            } catch (Exception e) {
-                // Continue polling on error
-                scheduleNextPoll(callback);
-            }
-        });
-    }
+                // Update status with thinking animation
+                String status = THINKING_FRAMES[pollCount % THINKING_FRAMES.length];
+                mainHandler.post(() -> {
+                    callback.onStatusChanged(status);
+                    callback.onPolling(pollCount, remainingSeconds);
+                });
 
-    private void scheduleNextPoll(SyncCallback callback) {
-        if (!isWatching.get()) {
-            return;
-        }
-
-        mainHandler.postDelayed(() -> {
-            executor.execute(() -> pollForChanges(callback));
-        }, POLL_INTERVAL_MS);
-    }
-
-    private void showThinkingOnAr(int pollCount) {
-        if (!EvenG1Manager.getInstance().isConnected()) {
-            return;
-        }
-
-        // Cycle through animation frames
-        String frame = THINKING_FRAMES[pollCount % THINKING_FRAMES.length];
-
-        // Use page number to show progress (1/120 = 5sec/10min)
-        int maxPolls = MAX_POLL_TIME_MS / POLL_INTERVAL_MS;
-        int pageNum = Math.min(pollCount, maxPolls);
-
-        String debugStatus = "Poll:" + pollCount + " M:" + debugMtimeUpdates + " S:" + debugTextSame;
-
-        EvenG1Protocol.sendText(
-                EvenG1Manager.getInstance(),
-                frame + "\n" + debugStatus,
-                mainHandler,
-                new EvenG1Protocol.TextSendCallback() {
+                // Check Turso for new message (filtered by CWD)
+                tursoManager.getLatestMessageForCwd(currentCwd, new TursoSyncManager.MessageCallback() {
                     @Override
-                    public void onSuccess() {
-                    }
+                    public void onResult(String message) {
+                        if (message != null && !message.isEmpty()) {
+                            // Check if message is different from last displayed
+                            if (!message.equals(lastDisplayedMessage)) {
+                                Log.d(TAG, "New message detected: " +
+                                        (message.length() > 50 ? message.substring(0, 50) + "..." : message));
 
-                    @Override
-                    public void onFailure(String error) {
-                    }
-                },
-                EvenG1Constants.NEW_TEXT_SCREEN,
-                pageNum,
-                maxPolls);
-    }
-
-    /**
-     * Check if assistant message has changed, and display if it has.
-     */
-    private void checkAndDisplayIfNew(SyncCallback callback) {
-        executor.execute(() -> {
-            try {
-                // Download latest file
-                ClaudeHistoryHttpClient client = new ClaudeHistoryHttpClient(serverHost, serverPort);
-                client.downloadLatest(new ClaudeHistoryHttpClient.DownloadCallback() {
-                    @Override
-                    public void onSuccess(String localPath) {
-                        // Get latest assistant comment
-                        ClaudeChatParser.AgentComment latestComment = ClaudeChatParser.getLatestAgentComment(localPath);
-                        String currentLatestText = latestComment != null ? latestComment.text : null;
-
-                        if (currentLatestText == null) {
-                            // No assistant comment found, continue polling
-                            android.util.Log.d("AutoArSync", "No assistant comment found, continuing to poll");
-                            scheduleNextPoll(callback);
-                            return;
-                        }
-
-                        android.util.Log.d("AutoArSync", "Comparing: Init=" +
-                                (initialLatestComment == null ? "null" : initialLatestComment.length() + " chars") +
-                                " vs Curr=" + currentLatestText.length() + " chars");
-
-                        // Compare with initial comment
-                        if (initialLatestComment == null) {
-                            // First successful fetch after failed initialization OR intentional null from
-                            // startWatching (in-progress).
-
-                            boolean isFinal = "end_turn".equals(latestComment.stopReason);
-
-                            if (isFinal) {
-                                // It's a finished message. Assume it's the OLD one (baseline).
-                                // Do NOT display.
-                                android.util.Log.d("AutoArSync", "Initializing baseline (Completed): " +
-                                        (currentLatestText != null
-                                                ? currentLatestText.substring(0,
-                                                        Math.min(20, currentLatestText.length()))
-                                                : "null"));
-                                initialLatestComment = currentLatestText;
-                            } else {
-                                // It is IN PROGRESS! Display it immediately.
-                                android.util.Log.d("AutoArSync",
-                                        "Detected IN PROGRESS message on first check. Displaying.");
-                                initialLatestComment = currentLatestText;
-                                hasDisplayedContent = true;
-                                debugMtimeUpdates++; // Mark as detected
-
-                                // Sync to Turso and AR
-                                mainHandler.post(() -> callback.onSyncComplete(localPath, currentLatestText));
+                                lastDisplayedMessage = message;
+                                mainHandler.post(() -> callback.onNewMessage(message));
                             }
-
-                            // Continue polling for further updates
-                            scheduleNextPoll(callback);
-                            return;
-                        }
-
-                        if (!currentLatestText.equals(initialLatestComment)) {
-                            // Assistant message has changed!
-                            android.util.Log.d("AutoArSync", "Assistant message changed!");
-                            debugMtimeUpdates++;
-
-                            // Check stop reason
-                            boolean isFinal = "end_turn".equals(latestComment.stopReason);
-                            boolean isEmpty = currentLatestText.trim().isEmpty();
-
-                            if (!isEmpty) {
-                                hasDisplayedContent = true;
-                            } else {
-                                android.util.Log.d("AutoArSync", "New message is empty");
-                            }
-
-                            if (isFinal) {
-                                isWatching.set(false);
-                                // Sync to Turso BEFORE notifying finish
-                                mainHandler.post(() -> callback.onSyncComplete(localPath, currentLatestText));
-                                mainHandler.post(callback::onFileChanged); // Notify finish
-                            } else {
-                                // Update tracker and continue polling (don't sync intermediate results)
-                                initialLatestComment = currentLatestText;
-                                // Update initialMtime
-                                try {
-                                    JSONObject info = fetchLatestInfo();
-                                    if (info != null) {
-                                        initialMtime = info.getDouble("mtime");
-                                    }
-                                } catch (Exception e) {
-                                }
-
-                                // Just continue polling - no sync until final
-                                scheduleNextPoll(callback);
-                            }
-
-                        } else {
-                            // Assistant message hasn't changed (probably just user message added)
-                            android.util.Log.d("AutoArSync", "Assistant message unchanged, continuing to poll");
-                            debugTextSame++;
-                            // Update initialMtime to avoid re-checking the same change
-                            try {
-                                JSONObject info = fetchLatestInfo();
-                                if (info != null) {
-                                    initialMtime = info.getDouble("mtime");
-                                }
-                            } catch (Exception e) {
-                                // Ignore
-                            }
-                            scheduleNextPoll(callback);
                         }
                     }
 
                     @Override
-                    public void onError(String message) {
-                        // Continue polling on download error
-                        android.util.Log.w("AutoArSync", "Download error: " + message);
-                        scheduleNextPoll(callback);
+                    public void onError(String error) {
+                        Log.w(TAG, "Turso poll error: " + error);
                     }
                 });
+
+                // Wait before next poll
+                Thread.sleep(POLL_INTERVAL_MS);
+
+            } catch (InterruptedException e) {
+                Log.d(TAG, "Polling interrupted");
+                isWatching.set(false);
+                break;
             } catch (Exception e) {
-                // Continue polling on error
-                android.util.Log.w("AutoArSync", "Error checking for new message: " + e.getMessage());
-                scheduleNextPoll(callback);
+                Log.e(TAG, "Polling error: " + e.getMessage());
+                postError(callback, "ポーリングエラー: " + e.getMessage());
+                isWatching.set(false);
+                break;
             }
-        });
-    }
-
-    public void downloadAndDisplay(SyncCallback callback) {
-        executor.execute(() -> {
-            try {
-                // Download latest file
-                ClaudeHistoryHttpClient client = new ClaudeHistoryHttpClient(serverHost, serverPort);
-                client.downloadLatest(new ClaudeHistoryHttpClient.DownloadCallback() {
-                    @Override
-                    public void onSuccess(String localPath) {
-                        // Parse and get latest comment
-                        List<ClaudeChatParser.AgentComment> comments = ClaudeChatParser.getAgentComments(localPath);
-                        if (comments.isEmpty()) {
-                            postError(callback, "コメントが見つかりません");
-                            return;
-                        }
-
-                        ClaudeChatParser.AgentComment latestComment = comments.get(comments.size() - 1);
-
-                        // Notify sync complete (TermuxActivity will handle sync to Turso and AR
-                        // display)
-                        mainHandler.post(() -> callback.onSyncComplete(localPath, latestComment.text));
-                    }
-
-                    @Override
-                    public void onError(String message) {
-                        postError(callback, "ダウンロードエラー: " + message);
-                    }
-                });
-            } catch (Exception e) {
-                postError(callback, "エラー: " + e.getMessage());
-            }
-        });
-    }
-
-    private void displayOnAr(String localPath, String content, SyncCallback callback) {
-        if (!EvenG1Manager.getInstance().isConnected()) {
-            postError(callback, "ARグラスが接続されていません");
-            return;
         }
 
-        // Create pager and display
-        com.termux.app.eveng1.ArTextPager pager = new com.termux.app.eveng1.ArTextPager(
-                EvenG1Manager.getInstance(),
-                mainHandler,
-                content);
-
-        pager.sendCurrentPage(new EvenG1Protocol.TextSendCallback() {
-            @Override
-            public void onSuccess() {
-                mainHandler.post(() -> callback.onSyncComplete(localPath, content));
-            }
-
-            @Override
-            public void onFailure(String error) {
-                postError(callback, "AR送信エラー: " + error);
-            }
-
-        });
-    }
-
-    private JSONObject fetchLatestInfo() {
-        try {
-            URL url = new URL("http://" + serverHost + ":" + serverPort + "/api/latest-info");
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
-            conn.setReadTimeout(READ_TIMEOUT_MS);
-            conn.setRequestMethod("GET");
-
-            try {
-                int responseCode = conn.getResponseCode();
-                if (responseCode != 200) {
-                    return null;
-                }
-
-                BufferedReader reader = new BufferedReader(
-                        new InputStreamReader(conn.getInputStream()));
-                StringBuilder sb = new StringBuilder();
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    sb.append(line);
-                }
-                reader.close();
-
-                return new JSONObject(sb.toString());
-            } finally {
-                conn.disconnect();
-            }
-        } catch (Exception e) {
-            return null;
-        }
+        Log.d(TAG, "Polling stopped");
     }
 
     private void postError(SyncCallback callback, String message) {
-        isWatching.set(false);
         mainHandler.post(() -> callback.onError(message));
     }
 }

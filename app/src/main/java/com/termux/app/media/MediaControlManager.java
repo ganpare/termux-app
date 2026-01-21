@@ -22,8 +22,16 @@ public class MediaControlManager {
     private Runnable mPendingNext;
     private Runnable mPendingPrev;
     private Runnable mPendingPlayPause;
-    private static final int DOUBLE_CLICK_DELAY = 300;
+    private static final int DOUBLE_CLICK_DELAY = 600;
     private MediaControlCallback mCallback;
+
+    // Click counters
+    private int mNextClickCount = 0;
+    private Runnable mPendingNextRunnable;
+    private int mPrevClickCount = 0;
+    private Runnable mPendingPrevRunnable;
+    private int mPlayPauseClickCount = 0;
+    private Runnable mPendingPlayPauseRunnable;
 
     public interface MediaControlCallback {
         void onNextSingle();
@@ -37,6 +45,12 @@ public class MediaControlManager {
         void onPlayPauseSingle();
 
         void onPlayPauseDouble();
+
+        void onPlayPauseTriple();
+
+        void onVolumeUp();
+
+        void onVolumeDown();
     }
 
     public MediaControlManager(Context context) {
@@ -64,10 +78,37 @@ public class MediaControlManager {
             PlaybackStateCompat.Builder stateBuilder = new PlaybackStateCompat.Builder()
                     .setActions(PlaybackStateCompat.ACTION_PLAY |
                             PlaybackStateCompat.ACTION_PAUSE |
+                            PlaybackStateCompat.ACTION_PLAY_PAUSE |
                             PlaybackStateCompat.ACTION_SKIP_TO_NEXT |
-                            PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS);
+                            PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS)
+                    .setState(PlaybackStateCompat.STATE_PLAYING, PlaybackStateCompat.PLAYBACK_POSITION_UNKNOWN, 1.0f);
 
             mMediaSession.setPlaybackState(stateBuilder.build());
+
+            // Handle Volume keys
+            // VOLUME_CONTROL_RELATIVE allows us to capture up/down events
+            // maxVolume=100, currentVolume=50 is arbitrary, just need space to go up/down
+            androidx.media.VolumeProviderCompat volumeProvider = new androidx.media.VolumeProviderCompat(
+                    androidx.media.VolumeProviderCompat.VOLUME_CONTROL_RELATIVE, 100, 50) {
+                @Override
+                public void onAdjustVolume(int direction) {
+                    if (mCallback == null)
+                        return;
+
+                    // direction dictates the key pressed:
+                    // +1: Volume Up
+                    // -1: Volume Down
+                    // 0: Release (sometimes)
+                    if (direction > 0) {
+                        android.util.Log.d(LOG_TAG, "Volume Up Detected");
+                        new Handler(Looper.getMainLooper()).post(() -> mCallback.onVolumeUp());
+                    } else if (direction < 0) {
+                        android.util.Log.d(LOG_TAG, "Volume Down Detected");
+                        new Handler(Looper.getMainLooper()).post(() -> mCallback.onVolumeDown());
+                    }
+                }
+            };
+            mMediaSession.setPlaybackToRemote(volumeProvider);
 
             mMediaSession.setCallback(new MediaSessionCompat.Callback() {
                 @Override
@@ -76,20 +117,20 @@ public class MediaControlManager {
                     if (mCallback == null)
                         return;
 
-                    if (mPendingNext != null) {
-                        android.util.Log.d(LOG_TAG, "Double Click Detected (Next)");
-                        mHandler.removeCallbacks(mPendingNext);
-                        mPendingNext = null;
-                        mCallback.onNextDouble();
-                    } else {
-                        android.util.Log.d(LOG_TAG, "Scheduling Single Click (Next)");
-                        mPendingNext = () -> {
-                            android.util.Log.d(LOG_TAG, "Firing Single Click (Next)");
-                            mCallback.onNextSingle();
-                            mPendingNext = null;
-                        };
-                        mHandler.postDelayed(mPendingNext, DOUBLE_CLICK_DELAY);
+                    mNextClickCount++;
+                    if (mPendingNextRunnable != null) {
+                        mHandler.removeCallbacks(mPendingNextRunnable);
                     }
+
+                    mPendingNextRunnable = () -> {
+                        if (mNextClickCount == 1)
+                            mCallback.onNextSingle();
+                        else if (mNextClickCount >= 2)
+                            mCallback.onNextDouble();
+                        mNextClickCount = 0;
+                        mPendingNextRunnable = null;
+                    };
+                    mHandler.postDelayed(mPendingNextRunnable, DOUBLE_CLICK_DELAY);
                 }
 
                 @Override
@@ -98,20 +139,20 @@ public class MediaControlManager {
                     if (mCallback == null)
                         return;
 
-                    if (mPendingPrev != null) {
-                        android.util.Log.d(LOG_TAG, "Double Click Detected (Prev)");
-                        mHandler.removeCallbacks(mPendingPrev);
-                        mPendingPrev = null;
-                        mCallback.onPreviousDouble();
-                    } else {
-                        android.util.Log.d(LOG_TAG, "Scheduling Single Click (Prev)");
-                        mPendingPrev = () -> {
-                            android.util.Log.d(LOG_TAG, "Firing Single Click (Prev)");
-                            mCallback.onPreviousSingle();
-                            mPendingPrev = null;
-                        };
-                        mHandler.postDelayed(mPendingPrev, DOUBLE_CLICK_DELAY);
+                    mPrevClickCount++;
+                    if (mPendingPrevRunnable != null) {
+                        mHandler.removeCallbacks(mPendingPrevRunnable);
                     }
+
+                    mPendingPrevRunnable = () -> {
+                        if (mPrevClickCount == 1)
+                            mCallback.onPreviousSingle();
+                        else if (mPrevClickCount >= 2)
+                            mCallback.onPreviousDouble();
+                        mPrevClickCount = 0;
+                        mPendingPrevRunnable = null;
+                    };
+                    mHandler.postDelayed(mPendingPrevRunnable, DOUBLE_CLICK_DELAY);
                 }
 
                 @Override
@@ -155,19 +196,25 @@ public class MediaControlManager {
         if (mCallback == null)
             return;
 
-        if (mPendingPlayPause != null) {
-            android.util.Log.d(LOG_TAG, "Double Click Detected (Play/Pause)");
-            mHandler.removeCallbacks(mPendingPlayPause);
-            mPendingPlayPause = null;
-            mCallback.onPlayPauseDouble();
-        } else {
-            android.util.Log.d(LOG_TAG, "Scheduling Single Click (Play/Pause)");
-            mPendingPlayPause = () -> {
+        mPlayPauseClickCount++;
+        if (mPendingPlayPauseRunnable != null) {
+            mHandler.removeCallbacks(mPendingPlayPauseRunnable);
+        }
+
+        mPendingPlayPauseRunnable = () -> {
+            if (mPlayPauseClickCount == 1) {
                 android.util.Log.d(LOG_TAG, "Firing Single Click (Play/Pause)");
                 mCallback.onPlayPauseSingle();
-                mPendingPlayPause = null;
-            };
-            mHandler.postDelayed(mPendingPlayPause, DOUBLE_CLICK_DELAY);
-        }
+            } else if (mPlayPauseClickCount == 2) {
+                android.util.Log.d(LOG_TAG, "Firing Double Click (Play/Pause)");
+                mCallback.onPlayPauseDouble();
+            } else if (mPlayPauseClickCount >= 3) {
+                android.util.Log.d(LOG_TAG, "Firing Triple Click (Play/Pause)");
+                mCallback.onPlayPauseTriple();
+            }
+            mPlayPauseClickCount = 0;
+            mPendingPlayPauseRunnable = null;
+        };
+        mHandler.postDelayed(mPendingPlayPauseRunnable, DOUBLE_CLICK_DELAY);
     }
 }
